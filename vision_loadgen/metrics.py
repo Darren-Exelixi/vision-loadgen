@@ -17,6 +17,7 @@ from vision_loadgen.analysis import (
     synthetic_staleness_by_camera,
 )
 from vision_loadgen.capacity import gpu_worker_map
+from vision_loadgen.exporter import MetricsExporter
 from vision_loadgen.kafka_io import LagReader, ProducerStats
 from vision_loadgen.workers import WorkerClient
 
@@ -128,10 +129,11 @@ def _fmt(value: Optional[float], digits: int = 1) -> str:
 
 
 class Recorder:
-    """Console line, timeseries.csv row per sample batch."""
+    """Console line, timeseries.csv row and (optionally) Prometheus metrics per sample batch."""
 
-    def __init__(self, directory: Path, workers: list[str]) -> None:
+    def __init__(self, directory: Path, workers: list[str], exporter: Optional[MetricsExporter] = None) -> None:
         self._workers = workers
+        self._exporter = exporter
         self._started = time.time()
         self._last_acked = 0
         self._last_time = self._started
@@ -168,8 +170,39 @@ class Recorder:
                          f"p95={_fmt(p95)}s real+={_fmt(excess.get(worker))}s")
         self._writer.writerow(row)
         self._file.flush()
+        if self._exporter is not None:
+            self._export(active, stats, by_worker, excess)
         print(f"[{now - self._started:7.0f}s] {stage:<14} cams={active:<4} pub={rate:7.1f}/s "
               f"err={stats.errors} | " + " | ".join(parts), flush=True)
+
+    def _export(self, active: int, stats: ProducerStats, by_worker: dict[str, WorkerSample],
+                excess: dict[str, Optional[float]]) -> None:
+        exporter = self._exporter
+        exporter.set("loadgen_active_cameras", active)
+        exporter.set("loadgen_frames_sent_total", stats.sent)
+        exporter.set("loadgen_frames_acked_total", stats.acked)
+        exporter.set("loadgen_publish_errors_total", stats.errors)
+        for worker in self._workers:
+            sample = by_worker.get(worker)
+            ok = sample is not None and sample.ok
+            exporter.set("loadgen_worker_up", 1 if ok else 0, worker=worker)
+            exporter.set("loadgen_consumer_lag", sample.lag if sample else None, worker=worker)
+            exporter.clear("loadgen_gpu_copy_staleness_p95_seconds", worker=worker)
+            if not ok:
+                exporter.set("loadgen_worker_running", None, worker=worker)
+                exporter.clear("loadgen_synthetic_staleness_seconds", worker=worker)
+                exporter.set("loadgen_real_staleness_excess_seconds", None, worker=worker)
+                continue
+            values = sample.synthetic_staleness
+            exporter.set("loadgen_worker_running", 1 if sample.running else 0, worker=worker)
+            exporter.set("loadgen_synthetic_staleness_seconds", percentile(values, 50), worker=worker, quantile="0.5")
+            exporter.set("loadgen_synthetic_staleness_seconds", percentile(values, 95), worker=worker, quantile="0.95")
+            exporter.set("loadgen_synthetic_staleness_seconds", max(values) if values else None,
+                         worker=worker, quantile="max")
+            exporter.set("loadgen_real_staleness_excess_seconds", excess.get(worker), worker=worker)
+            for index, copy_values in sample.gpu_staleness.items():
+                exporter.set("loadgen_gpu_copy_staleness_p95_seconds", percentile(copy_values, 95),
+                             worker=worker, gpu_copy=index)
 
     def close(self) -> None:
         self._file.close()

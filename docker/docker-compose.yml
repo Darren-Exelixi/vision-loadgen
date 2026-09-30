@@ -11,6 +11,10 @@ services:
     environment:
       LOADGEN_RESULTS_DIR: /results
     networks: [vision]
+    # Prometheus metrics when LOADGEN_METRICS_PORT=9464 (../monitoring). `compose run` publishes
+    # it only with --service-ports.
+    ports:
+      - "9464:9464"
     volumes:
       # Frames and events must be mounted at the SAME paths the workers use (FLAGGED: confirm).
       # For named Docker volumes, set the *_SOURCE variables to their names and declare them

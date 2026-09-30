@@ -63,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--no-guard", action="store_true", help="Disable the real-camera guard (staging throughput only)")
     run.add_argument("--keep-events", action="store_true", help="Keep events created by synthetic cameras")
     run.add_argument("--allow-production", action="store_true")
+    run.add_argument("--metrics-port", type=int,
+                     help="Serve Prometheus metrics on this port during the run (default LOADGEN_METRICS_PORT; off)")
 
     cleanup = commands.add_parser("cleanup", help="Undo a run, or remove leftovers from crashed runs")
     target = cleanup.add_mutually_exclusive_group(required=True)
@@ -79,6 +81,8 @@ def _overrides(args) -> dict[str, Any]:
         overrides["environment"] = args.environment
     if getattr(args, "template_camera", None):
         overrides["registration"] = {"template_camera_id": args.template_camera}
+    if getattr(args, "metrics_port", None) is not None:
+        overrides["output"] = {"metrics_port": args.metrics_port}
     return overrides
 
 

@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import psycopg2
 import pytest
 from kafka import KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
+from kafka.errors import KafkaError
 from psycopg2.extras import Json, RealDictCursor
 
 from vision_loadgen import cli
@@ -80,7 +82,12 @@ def _wait_for_consumer_groups(*prefixes: str) -> None:
     reader = LagReader(KafkaConfig(bootstrap_servers=BOOTSTRAP, topic=TOPIC))
     try:
         deadline = time.monotonic() + 90
-        while any(reader.lag(prefix) is None for prefix in prefixes):
+        while True:
+            try:
+                if all(reader.lag(prefix) is not None for prefix in prefixes):
+                    return
+            except KafkaError:  # e.g. CoordinatorLoadInProgressError right after the broker starts
+                pass
             if time.monotonic() > deadline:
                 raise TimeoutError("fake workers never committed consumer offsets")
             time.sleep(1)
@@ -310,10 +317,38 @@ def test_run_publishes_measures_and_cleans_up(stack):
     seed = stack["seed"]
     template = seed["template"]
     syncs_before = stack["crowd"].syncs
+    app.output.metrics_port, app.output.metrics_addr, app.output.metrics_linger_s = 0, "127.0.0.1", 0.5
 
-    summary = Runner(app, scenario, RunOptions()).run()
+    runner = Runner(app, scenario, RunOptions())
+    scraped: list[str] = []
+
+    def scrape_mid_run():
+        deadline = time.time() + 120
+        while time.time() < deadline and not scraped:
+            exporter = runner.exporter
+            if (exporter is not None and exporter.value("loadgen_consumer_lag", worker="crowd") is not None
+                    and exporter.value("loadgen_synthetic_staleness_seconds", worker="crowd", quantile="0.95")
+                    is not None):
+                with urllib.request.urlopen(f"http://127.0.0.1:{exporter.port}/metrics", timeout=5) as response:
+                    scraped.append(response.read().decode())
+            time.sleep(0.5)
+
+    scraper = threading.Thread(target=scrape_mid_run, daemon=True)
+    scraper.start()
+    summary = runner.run()
+    scraper.join(timeout=10)
 
     assert summary.get("error") is None, summary.get("error")
+    assert scraped, "no mid-run scrape of /metrics"
+    run_label = f'run_id="{summary["run_id"]}"'
+    for series in ("loadgen_run_info{", "loadgen_stage_info{", "loadgen_active_cameras{", 'phase="running"',
+                   'loadgen_synthetic_staleness_seconds{' + run_label + ',worker="crowd",quantile="0.95"}',
+                   'loadgen_consumer_lag{' + run_label + ',worker="crowd"}'):
+        assert series in scraped[0], series
+    exporter = runner.exporter
+    assert exporter.value("loadgen_phase", phase="done") == 1
+    assert exporter.value("loadgen_stage_kept_up", worker="crowd", stage="level 3", stage_index="02") == 1
+    assert abs(exporter.value("loadgen_clock_offset_seconds", worker="crowd")) <= 1.0
     assert summary["aborted"] is None
     assert summary["producer"]["acked"] > 50 and summary["producer"]["errors"] == 0
     assert summary["guard_baseline_real_cameras"] == {"crowd": 1, "attendance": 1}

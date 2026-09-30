@@ -22,6 +22,7 @@ from vision_loadgen.analysis import (
 )
 from vision_loadgen.capacity import Capacity, plan_capacity, probe_free_mb
 from vision_loadgen.config import AppConfig, ConfigError, GuardConfig, ScenarioConfig
+from vision_loadgen.exporter import MetricsExporter
 from vision_loadgen.frames import build_message
 from vision_loadgen.kafka_io import FrameProducer, LagReader
 from vision_loadgen.metrics import ActiveCameras, Recorder, Sampler
@@ -87,12 +88,15 @@ class Runner:
         self._registrar: Optional[Registrar] = None
         self._pending_count: Optional[int] = None
         self._settled_at = 0.0
+        self.exporter: Optional[MetricsExporter] = None
 
     def run(self) -> dict[str, Any]:
         registry = Registry.create(self.app.output.results_dir, new_run_id(), self.app.environment)
         registrar = Registrar(self.app, self.scenario.workers, registry)
         self._registrar = registrar
         self._install_signal_handlers()
+        self._start_exporter(registry.run_id)
+        self._phase("preparing")
         log.info("Run %s: %s (%s) on %s, sizing %s", registry.run_id, self.scenario.name, self.scenario.type,
                  ", ".join(self.scenario.workers), self.scenario.sizing)
 
@@ -113,6 +117,7 @@ class Runner:
         try:
             registrar.prepare(self.template_id)
             summary["template_camera_id"] = registry.template_camera_id
+            self._export_run_info(registry.template_camera_id, summary["started_at"])
             capacities = plan_capacities(self.app, self.scenario.workers, registrar.real_camera_counts())
             summary["capacity"] = {name: capacity.as_dict() for name, capacity in capacities.items()}
             stages, cap_note = cap_stages(build_stages(self.scenario), capacities, self.scenario)
@@ -144,12 +149,14 @@ class Runner:
                 cameras_per_worker={name: self.app.workers[name].cameras_per_worker for name in self.scenario.workers},
             )
             # Baseline before anything is enabled: the workers' real cameras as they normally run.
+            self._phase("baseline")
             guard = self._calibrated_guard(sampler)
             summary["guard_baseline_real_cameras"] = {worker: len(cams) for worker, cams in guard.baseline.items()}
 
-            recorder = Recorder(registry.directory, self.scenario.workers)
+            recorder = Recorder(registry.directory, self.scenario.workers, self.exporter)
             registry.run_started_at = time.time()
             registry.set_status("running")
+            self._phase("running")
             sampler.start()
             pacer = Pacer(self.scenario.fps_per_camera)
             if self.scenario.sizing == "fixed":
@@ -172,6 +179,8 @@ class Runner:
             if recorder:
                 recorder.close()
             log.info("Tearing down run %s", registry.run_id)
+            self._phase("teardown")
+            self._metric("loadgen_active_cameras", 0)
             summary["teardown"] = registrar.teardown(self.options.keep_events)
 
         summary["ended_at"] = time.time()
@@ -181,7 +190,44 @@ class Runner:
         self._add_results(summary, registry)
         with (registry.directory / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, default=str)
+        self._export_clock_offsets()
+        self._metric("loadgen_run_end_time_seconds", summary["ended_at"])
+        self._phase("done")
+        if self.exporter is not None:
+            self.exporter.stop(self.app.output.metrics_linger_s)
         return summary
+
+    def _start_exporter(self, run_id: str) -> None:
+        output = self.app.output
+        if output.metrics_port is None:
+            return
+        exporter = MetricsExporter(run_id, output.metrics_addr, output.metrics_port)
+        if exporter.start():
+            self.exporter = exporter
+
+    def _metric(self, name: str, value: Optional[float], **labels: Any) -> None:
+        if self.exporter is not None:
+            self.exporter.set(name, value, **labels)
+
+    def _phase(self, phase: str) -> None:
+        if self.exporter is not None:
+            self.exporter.clear("loadgen_phase")
+            self.exporter.set("loadgen_phase", 1, phase=phase)
+
+    def _export_clock_offsets(self) -> None:
+        if self.exporter is None or self._registrar is None:
+            return
+        for name, client in self._registrar.clients.items():
+            if client.clock.known:
+                self.exporter.set("loadgen_clock_offset_seconds", client.clock.seconds, worker=name)
+
+    def _export_run_info(self, template_camera_id: str, started_at: float) -> None:
+        scenario = self.scenario
+        labels = {"scenario": scenario.name, "scenario_type": scenario.type, "environment": self.app.environment}
+        self._metric("loadgen_run_info", 1, template_camera=template_camera_id or "", **labels)
+        self._metric("loadgen_run_start_time_seconds", started_at, **labels)
+        self._metric("loadgen_threshold_seconds", scenario.saturation.max_staleness_s, kind="max_staleness")
+        self._metric("loadgen_threshold_seconds", scenario.guard.max_real_staleness_increase_s, kind="guard")
 
     def _build_source(self, synthetic_ids: set[str], template_id: str) -> FrameSource:
         cfg = self.scenario.source
@@ -223,10 +269,16 @@ class Runner:
                     sampler: Sampler, recorder: Recorder, guard: RealCameraGuard) -> list[dict]:
         results: list[dict] = []
         failed: set[str] = set()
-        for stage in stages:
+        for number, stage in enumerate(stages, start=1):
             if self.stop_event.is_set():
                 break
             log.info("Stage: %s for %.0fs", stage.name, stage.duration_s)
+            stage_index = f"{number:02d}"
+            if self.exporter is not None:
+                self.exporter.clear("loadgen_stage_info")
+            self._metric("loadgen_stage_info", 1, stage=stage.name, stage_index=stage_index)
+            self._metric("loadgen_stage_index", number)
+            self._metric("loadgen_planned_cameras", stage.cameras)
             if self.scenario.sizing == "per_stage":
                 self._resize(stage.cameras, pacer, active, guard)
             else:
@@ -247,10 +299,14 @@ class Runner:
                 stage_samples = [sample for sample in samples[start_index[name]:] if sample.t >= measured_from]
                 entry: dict[str, Any] = stage_stats(stage_samples)
                 entry["gpu_workers_expected"] = capacities[name].gpu_workers(active.count)
+                self._metric("loadgen_gpu_workers_expected", entry["gpu_workers_expected"], worker=name)
                 if stage.evaluate and completed:
                     window_start = max(measured_from, stage_ended - self.scenario.saturation.window_s)
                     verdict = stage_verdict(stage_samples, window_start, self.scenario.saturation)
                     entry["verdict"] = asdict(verdict)
+                    labels = {"worker": name, "stage": stage.name, "stage_index": stage_index}
+                    self._metric("loadgen_stage_kept_up", 1 if verdict.kept_up else 0, **labels)
+                    self._metric("loadgen_stage_staleness_p95_seconds", verdict.staleness_p95, **labels)
                     if not verdict.kept_up:
                         failed.add(name)
                 record["workers"][name] = entry
@@ -294,6 +350,7 @@ class Runner:
                 self.samples[sample.worker].append(sample)
             recorder.record(stage.name, active.count, producer.stats(), batch,
                             {sample.worker: guard.excess(sample) for sample in batch if sample.ok})
+            self._export_clock_offsets()
             for sample in batch:
                 reason = guard.check(sample)
                 if reason:
@@ -334,6 +391,7 @@ class Runner:
                     "saturated": any(not verdict["kept_up"] for _, verdict in results),
                     "gpu_capacity_cap": capacity.get("max_synthetic_cameras"),
                 }
+                self._metric("loadgen_max_sustained_cameras", best or 0, worker=name)
         if self.scenario.type == "soak":
             start = registry.run_started_at or summary["started_at"]
             summary["soak"] = {name: soak_summary(samples, start) for name, samples in self.samples.items()}

@@ -117,6 +117,15 @@ class RegistrationConfig(BaseModel):
 class OutputConfig(BaseModel):
     results_dir: str = "./loadgen_results"
     sample_interval_s: float = 5.0
+    # Prometheus endpoint for `run`; None = off. Linger keeps it up after the run for a final scrape.
+    metrics_port: Optional[int] = Field(default=None, ge=0, le=65535)
+    metrics_addr: str = "0.0.0.0"
+    metrics_linger_s: float = Field(default=15.0, ge=0)
+
+    @field_validator("metrics_port", mode="before")
+    @classmethod
+    def _blank_port_is_off(cls, value: Any) -> Any:
+        return None if isinstance(value, str) and not value.strip() else value
 
 
 class EventsConfig(BaseModel):

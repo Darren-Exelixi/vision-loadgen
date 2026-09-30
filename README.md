@@ -7,7 +7,8 @@ image next to `vision_shared` when that image is built, so any worker can load-t
 Design, assumptions and open items: [docs/load-generator-design.md](docs/load-generator-design.md).
 
 Layout: `vision_loadgen/` is the package. `Dockerfile` builds the image; `docker/` (compose file,
-`.env.example`, example `--config` file), `docs/` and `tests/` are never installed.
+`.env.example`, example `--config` file), `monitoring/` (Prometheus + Grafana), `docs/` and
+`tests/` are never installed.
 
 Presets exist for crowd monitoring, sentiment analysis (emotion) and AI attendance. Any worker
 built on `vision_shared`'s `KafkaFramePipeline` can be added with a `--config` file (see
@@ -114,6 +115,7 @@ python -m vision_loadgen cleanup --orphans [--yes]
 - `--environment staging|production`: overrides `LOADGEN_ENVIRONMENT`. **Unset means production**,
   which needs `--allow-production`.
 - `--keep-events`: keep events (rows and files) created by synthetic cameras.
+- `--metrics-port N` (`run`): serve Prometheus metrics on this port during the run (see Grafana).
 
 ## GPU model copies
 
@@ -181,6 +183,40 @@ prints the offset and `summary.json` records it under `clock_offset`.
 `<results>/<run_id>/`: `timeseries.csv` (per sample), `summary.json` (capacity, stages with
 verdicts and per-copy staleness, throughput result, soak drift, teardown report), `registry.json`
 and `snapshots/`.
+
+## Grafana
+
+`run` can also serve its metrics to Prometheus, live, for a Grafana dashboard. `monitoring/` holds
+a Prometheus + Grafana stack for your own machine, with the datasource and dashboard provisioned:
+
+```powershell
+docker compose -f monitoring/docker-compose.yml up -d     # once; keeps running
+# in .env (or the shell): LOADGEN_METRICS_PORT=9464
+.venv\Scripts\python -m vision_loadgen run --worker emotion --server-ip 10.10.10.22 --scenario latency
+```
+
+Open http://localhost:3000 (`admin` / `admin`, or `GRAFANA_ADMIN_PASSWORD`): the home dashboard is
+**vision-loadgen**. Pick the run in **Run** (newest first), or click a run id in the **Runs** table
+to jump to its time window; widen the time range to find older runs (Prometheus keeps 90 days,
+`PROMETHEUS_RETENTION`). Panels: synthetic cameras and publish rate; synthetic staleness p50/p95/max
+against the keep-up limit; consumer lag; real-camera staleness above baseline against the guard
+limit; worker health; staleness per GPU model copy and copies expected; stage verdicts and the
+throughput result. Stages are shaded on every graph.
+
+- The exporter is off unless `LOADGEN_METRICS_PORT` or `--metrics-port` is set, needs no extra
+  package (worker images included), and never fails a run: a busy port only logs a warning.
+  `LOADGEN_METRICS_ADDR` sets the bind address (default `0.0.0.0`). After the run it keeps serving
+  for 15 s (`output.metrics_linger_s`) so the verdicts get scraped.
+- Prometheus scrapes `host.docker.internal:9464` (this machine) every 5 s. To watch a run somewhere
+  else, e.g. beside a worker on a server, add its address to `monitoring/prometheus/targets/`
+  (picked up within 30 s, no restart) and publish the port:
+  `docker compose run --rm --no-deps -p 9464:9464 -e LOADGEN_METRICS_PORT=9464 <worker-service> python -m vision_loadgen run ...`.
+  For the standalone compose in `docker/`, use `docker compose run --rm --service-ports load-generator run ...`.
+- Windows may ask to allow Python through the firewall on the first run; allow it for private
+  networks, or set `LOADGEN_METRICS_ADDR=127.0.0.1` if Docker Desktop reaches it that way.
+- Metric names and labels are listed in `vision_loadgen/exporter.py` (`METRICS`); every series
+  carries `run_id`. Dashboard edits made in Grafana last until it restarts: export the JSON into
+  `monitoring/grafana/dashboards/vision-loadgen.json` to keep them.
 
 ## Tests
 

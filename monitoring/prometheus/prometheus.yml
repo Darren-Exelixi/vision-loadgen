@@ -1,0 +1,12 @@
+global:
+  # Matches the load generator's sample interval (output.sample_interval_s).
+  scrape_interval: 5s
+  scrape_timeout: 4s
+
+scrape_configs:
+  - job_name: vision-loadgen
+    file_sd_configs:
+      # Add a target (e.g. a run beside a worker on a server) by editing or adding a file here;
+      # Prometheus picks it up without a restart.
+      - files: [/etc/prometheus/targets/*.json]
+        refresh_interval: 30s

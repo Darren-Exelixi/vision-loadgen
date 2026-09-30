@@ -157,7 +157,11 @@ def base_config(lookup: Lookup, shared: Lookup) -> dict[str, Any]:
         "registration": {
             "template_camera_id": lookup("LOADGEN_TEMPLATE_CAMERA_ID") or lookup("TEMPLATE_CAMERA_ID") or "",
         },
-        "output": {"results_dir": results_dir},
+        "output": {
+            "results_dir": results_dir,
+            "metrics_port": _int(lookup("LOADGEN_METRICS_PORT")),
+            "metrics_addr": lookup("LOADGEN_METRICS_ADDR") or "0.0.0.0",
+        },
         "events": {"dir": lookup("EVENTS_DIR") or ""},
         "workers": expand_env(workers, lookup),
     }

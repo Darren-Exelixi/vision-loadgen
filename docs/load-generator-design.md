@@ -192,6 +192,19 @@ Per sample (default every 5 s), for each worker:
 Outputs in `results/<run_id>/`: `registry.json`, `timeseries.csv`, `summary.json`, plus the
 attendance snapshot.
 
+### Observability (Prometheus / Grafana)
+
+With `LOADGEN_METRICS_PORT` (or `--metrics-port`) set, `run` also serves `/metrics` in the
+Prometheus text format (`vision_loadgen/exporter.py`, stdlib only so worker images need nothing
+new). The `Recorder` publishes each sample batch — the same p50/p95/max staleness, lag and
+real-camera excess that go to `timeseries.csv`, plus staleness p95 per GPU model copy — and the
+runner publishes run info, phase, current stage, thresholds, per-stage verdicts, the throughput
+result and clock offsets. Every series carries `run_id`, so one Prometheus holds many runs.
+After a run the endpoint lingers (`metrics_linger_s`, 15 s) for a final scrape. `monitoring/`
+provisions Prometheus (5 s scrape, file-based targets, 90-day retention) and Grafana with the
+`vision-loadgen` dashboard; `tests/test_dashboard.py` fails if the dashboard queries a metric the
+exporter does not declare. The CSV/JSON outputs are unchanged and remain the record of a run.
+
 ## Safety
 
 - **Real-camera guard** (on by default): the tool records each worker's real-camera
