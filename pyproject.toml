@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vision-loadgen"
+version = "0.1.0"
+description = "Kafka frame load generator for the VisionAible GPU workers"
+readme = "README.md"
+requires-python = ">=3.10"
+# All of these are already in the worker images, which copy only the package (see README.md).
+dependencies = [
+    # 3.x removed KafkaAdminClient.list_consumer_groups; workers pin 2.0.2.
+    "kafka-python>=2.0.2,<3",
+    "pydantic>=2.5",
+    "psycopg2-binary>=2.9",
+    "python-jose[cryptography]>=3.3",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Standalone image: YAML --config files and time zone data on slim Python images.
+standalone = ["PyYAML>=6.0", "tzdata>=2024.1"]
+dev = ["PyYAML>=6.0", "pytest>=8.0"]
+
+[project.scripts]
+vision-loadgen = "vision_loadgen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vision_loadgen*"]

@@ -1,0 +1,170 @@
+# vision-loadgen
+
+Stress-tests the Kafka-fed GPU workers by publishing one real camera's frames as N synthetic
+"stacked" cameras, then measuring how far behind each worker falls. It is its own package
+(`vision_loadgen`) and image, versioned separately from `vision_shared`, and is added to a worker
+image next to `vision_shared` when that image is built, so any worker can load-test itself.
+Design, assumptions and open items: [docs/load-generator-design.md](docs/load-generator-design.md).
+
+Layout: `vision_loadgen/` is the package. `Dockerfile` builds the image; `docker/` (compose file,
+`.env.example`, example `--config` file), `docs/` and `tests/` are never installed.
+
+Presets exist for crowd monitoring, sentiment analysis (emotion) and AI attendance. Any worker
+built on `vision_shared`'s `KafkaFramePipeline` can be added with a `--config` file (see
+`vision_loadgen/presets.py`).
+
+## Image
+
+```bash
+docker build -t ghcr.io/exelixi-ai/vision-loadgen:0.1.0 .
+docker push ghcr.io/exelixi-ai/vision-loadgen:0.1.0
+```
+
+One image, two uses: the standalone runner (`ENTRYPOINT python -m vision_loadgen`), and
+`/dist/vision_loadgen`, the bare package, at a path that does not depend on Python version, for
+worker images to copy.
+
+## Adding it to a worker image
+
+Next to the existing `vision_shared` lines in the worker's `Dockerfile` (crowd shown):
+
+```dockerfile
+ARG VISION_BASE_IMAGE=ghcr.io/exelixi-ai/vision-shared-base:1.0.6
+ARG VISION_LOADGEN_IMAGE=ghcr.io/exelixi-ai/vision-loadgen:0.1.0
+FROM ${VISION_BASE_IMAGE} AS vision_shared
+FROM ${VISION_LOADGEN_IMAGE} AS vision_loadgen
+...
+COPY --from=vision_shared /usr/local/lib/python3.10/site-packages/vision_shared \
+    /opt/conda/lib/python3.11/site-packages/vision_shared
+COPY --from=vision_loadgen /dist/vision_loadgen \
+    /opt/conda/lib/python3.11/site-packages/vision_loadgen
+```
+
+Nothing is pip-installed into the worker. Everything it needs (`kafka-python` 2.x, `pydantic`,
+`psycopg2`, `python-jose`, `python-dotenv`) is already in the worker images, and it never imports
+`vision_shared`, so any base image tag works. Bump `VISION_LOADGEN_IMAGE` to upgrade it; delete
+the two lines to drop it.
+
+## Two ways to run it
+
+**Beside a worker (recommended for testing one worker).** Run a one-off container of the
+worker's own compose service (the key under `services:`, not the function key). It gets the
+worker's image, env, volumes and network, reads the worker's own `Settings`
+(`app.core.config:settings`) and does not touch the running worker's process:
+
+```bash
+docker compose run --rm --no-deps -e LOADGEN_ENVIRONMENT=staging \
+  -v "$PWD/loadgen_results:/app/loadgen_results" \
+  <worker-service> python -m vision_loadgen check --scenario latency
+docker compose run --rm --no-deps -e LOADGEN_ENVIRONMENT=staging \
+  -v "$PWD/loadgen_results:/app/loadgen_results" \
+  <worker-service> python -m vision_loadgen run --scenario latency
+```
+
+If the service defines an `entrypoint`, add `--entrypoint python` and drop `python` from the
+command. Results go to `LOADGEN_RESULTS_DIR`, else `$LOGS_DIR/loadgen`, else `./loadgen_results`.
+From the worker's settings it takes: the module and vision-main database URLs, Kafka, the JWT
+secret, `FUNCTION_NAME` (which preset), `PUBLIC_BASE_IP` (which server's deployment),
+`CAMERAS_PER_WORKER` / `VRAM_PER_WORKER_MB` (GPU sizing), `EVENTS_DIR` (event file cleanup) and
+`TIMEZONE`, plus defaults from `vision_shared/.env`. When the container can see the GPU, it also
+estimates free VRAM with `nvidia-smi`.
+
+**Standalone (several workers in one run).** From `docker/`: copy `.env.example` to `.env`, then
+`docker compose run --rm load-generator run --scenario latency --worker crowd --worker emotion`.
+`config/example.yaml` there shows `--config` overrides (mounted at `/loadgen/config`).
+
+## Commands
+
+```bash
+python -m vision_loadgen check   --scenario latency            # read-only preflight + plan
+python -m vision_loadgen run     --scenario throughput --no-guard   # staging only
+python -m vision_loadgen run     --scenario latency --set levels=[5,10,20,40]
+python -m vision_loadgen capture --name soak-baseline --duration 600 --camera <id>
+python -m vision_loadgen run     --scenario soak --set source.mode=corpus --set source.corpus_name=soak-baseline
+python -m vision_loadgen cleanup --run-id 20260929-101500-ab12
+python -m vision_loadgen cleanup --orphans [--yes]
+```
+
+`vision-loadgen` is the same CLI when installed with pip.
+
+- `--scenario`: `throughput`, `latency`, `soak`, or a scenario file (YAML or JSON).
+- `--worker`: name (`crowd`, `emotion`, `attendance`) or function key; default: the worker it runs beside.
+- `--template-camera`: the real camera to copy; default: the worker's freshest live camera.
+- `--server-ip`: pick a deployment when a module runs on several servers.
+- `--set key=value`: scenario overrides (dotted keys, JSON values).
+- `--config file`: YAML/JSON merged over the presets (new workers, `gpu_free_vram_mb`, table names).
+- `--environment staging|production`: overrides `LOADGEN_ENVIRONMENT`. **Unset means production**,
+  which needs `--allow-production`.
+- `--keep-events`: keep events (rows and files) created by synthetic cameras.
+
+## GPU model copies
+
+`GpuInferenceEngine` runs one model copy per `CAMERAS_PER_WORKER` cameras (plus an API model
+when it has one) and gives camera *i* of the sorted camera ids to copy *i // CAMERAS_PER_WORKER*.
+It refuses to start when the copies need more than the VRAM that was free when the worker
+started, and that stops its real cameras too. So the load generator:
+
+- **Sizes each stage like production** (`sizing: per_stage`, default). Every stage enables
+  exactly its camera count in the module's settings and re-syncs the worker, so the engine runs
+  `ceil((real + synthetic) / CAMERAS_PER_WORKER)` copies, as it would for that many real cameras.
+  Publishing pauses during the restart, the guard ignores it, and samples count only after
+  `settle_s`. `sizing: fixed` enables the largest count once (one sync, copies sized for the
+  largest stage).
+- **Caps the run at GPU capacity** when the budget is known: `gpu_free_vram_mb` from a config
+  file, or estimated from `nvidia-smi` when running beside the worker. Stages above the cap are
+  skipped; a throughput ramp ends at the cap. Unknown capacity does not cap; a sync that fails
+  anyway stops the run and tears down.
+- **Reports per copy**: each stage lists `gpu_workers_expected` and staleness per copy
+  (`gpu_workers`), so one overloaded copy shows up even when the average looks fine.
+
+## What a run does
+
+1. Resolves each worker's deployment, picks the template camera, checks the enabled settings rows,
+   reads each worker's real camera count and plans GPU capacity.
+2. Creates a `loadtest-<run_id>` region, assigns it to each worker, and clones the template
+   camera into it (plus its counting lines / zones). Nothing is enabled yet.
+3. Measures the real cameras' baseline for the guard.
+4. Per stage: enables that many synthetic cameras, re-syncs, publishes their frame pointers to
+   `exelixi.frames.raw` (reusing the real camera's JPEGs), and samples `/worker/status` and
+   consumer lag every few seconds.
+5. Tears everything down: settings, cloned rows, events and their image/video files, cameras,
+   region, assignments. Attendance rows changed by synthetic cameras are restored from a
+   pre-run snapshot.
+
+A worker "keeps up" at a stage when, over the last `saturation.window_s`, synthetic-camera
+staleness p95 stays under `max_staleness_s` and consumer lag grows no faster than
+`max_lag_growth_per_s`. Workers drop frames under overload instead of queueing, so staleness is
+the main signal.
+
+## Safety
+
+- **Real-camera guard** (default on): aborts (or backs off, per scenario) if real cameras fall more
+  than `max_real_staleness_increase_s` behind their baseline for `grace_s`. `--no-guard` is
+  accepted only for throughput in staging.
+- Every re-sync restarts the worker's pipeline for all its cameras, as adding a camera in the UI
+  does. With `sizing: per_stage` that happens once per stage.
+- Synthetic cameras get `ip=127.0.0.1` and blank stream URLs, so nothing opens extra streams.
+- The tool never enables a module; a module without an enabled settings row stops the run.
+- Everything created is written to `<results>/<run_id>/registry.json` first, so `cleanup` can
+  undo it; `cleanup --orphans` finds leftovers by name even without the registry.
+- Event files are deleted only when they resolve inside `EVENTS_DIR`, plus folders named exactly
+  after a synthetic camera id. Without `EVENTS_DIR` mounted, files are left and the report says so.
+- AI attendance: rows touched only by synthetic cameras are restored or deleted; rows also touched
+  by a real camera are left alone and listed under `manual_review` in `summary.json`.
+
+## Output
+
+`<results>/<run_id>/`: `timeseries.csv` (per sample), `summary.json` (capacity, stages with
+verdicts and per-copy staleness, throughput result, soak drift, teardown report), `registry.json`
+and `snapshots/`.
+
+## Tests
+
+```bash
+python -m venv .venv && .venv/Scripts/pip install -e ".[standalone,dev]"   # bin/ on Linux/macOS
+.venv/Scripts/python -m pytest                     # unit tests
+LOADGEN_IT=1 .venv/Scripts/python -m pytest        # + end-to-end against Postgres/Kafka in Docker
+```
+
+`tests/integration/docker-compose.it.yml` also has a `compat` service that runs the whole suite
+on Python 3.11 with the workers' pinned kafka-python 2.0.2 and pydantic 2.5.3 (commands in the file).

@@ -1,0 +1,22 @@
+# Optional overrides merged over the built-in presets (vision_loadgen/presets.py).
+# Use with: --config config/example.yaml. ${VAR} and ${VAR:-default} read the environment.
+
+workers:
+  crowd:
+    # VRAM the worker had free when it started (nvidia-smi on its server). Without it, a
+    # standalone run cannot cap the camera count to what fits on the GPU.
+    gpu_free_vram_mb: ${CROWD_GPU_FREE_VRAM_MB:-}
+  emotion:
+    # A module that overrides the shared GPU defaults in its own settings:
+    # cameras_per_worker: 8
+    # vram_per_worker_mb: 1500
+    # api_worker: true
+    gpu_free_vram_mb: ${SENTIMENT_GPU_FREE_VRAM_MB:-}
+
+  # A new worker built on KafkaFramePipeline:
+  # fall:
+  #   function_key: fall-detection
+  #   database_name: fall_detection_db
+  #   settings: {table: fall_detection_settings, camera_columns: [selected_cameras]}
+  #   purge:
+  #     - {table: fall_detection_events, file_columns: [image_path, video_path]}

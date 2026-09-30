@@ -1,0 +1,387 @@
+"""End-to-end run against real Postgres + Kafka with fake workers. Needs Docker; run with LOADGEN_IT=1."""
+
+from __future__ import annotations
+
+import csv
+import json
+import os
+import subprocess
+import threading
+import time
+import uuid
+from pathlib import Path
+
+import psycopg2
+import pytest
+from kafka import KafkaProducer
+from kafka.admin import KafkaAdminClient, NewTopic
+from psycopg2.extras import Json, RealDictCursor
+
+from vision_loadgen import cli
+from vision_loadgen.config import KafkaConfig, load_scenario
+from vision_loadgen.environment import build_app_config
+from vision_loadgen.kafka_io import LagReader
+from vision_loadgen.registrar import Registrar, find_orphans, registry_for_orphan
+from vision_loadgen.registry import Registry
+from vision_loadgen.runner import RunOptions, Runner
+from vision_loadgen.sources import CorpusSource, capture_corpus
+
+# tests/ has no __init__.py; pytest puts this directory on sys.path, which makes the
+# helpers importable by name.
+import it_schema as schema
+from fake_worker import FakeWorker
+
+pytestmark = pytest.mark.skipif(os.environ.get("LOADGEN_IT") != "1", reason="set LOADGEN_IT=1 (needs Docker)")
+
+HERE = Path(__file__).parent
+COMPOSE = ["docker", "compose", "-f", str(HERE / "docker-compose.it.yml"), "-p", "loadgen-it"]
+# The compat service runs inside the compose network against an already running stack.
+MANAGE_STACK = os.environ.get("LOADGEN_IT_STACK") != "external"
+PG = os.environ.get("LOADGEN_IT_PG", "postgresql://it:it@localhost:55432/{}")
+BOOTSTRAP = os.environ.get("LOADGEN_IT_BOOTSTRAP", "localhost:59092")
+TOPIC = "exelixi.frames.raw"
+SECRET = "it-secret"
+
+
+def _sql(db: str, statement: str, params=None, fetch: bool = False):
+    conn = psycopg2.connect(PG.format(db), cursor_factory=RealDictCursor)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(statement, params)
+            rows = cur.fetchall() if fetch else None
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
+def _one(db: str, statement: str, params=None):
+    rows = _sql(db, statement, params, fetch=True)
+    return rows[0] if rows else None
+
+
+def _wait_for_kafka() -> None:
+    deadline = time.monotonic() + 90
+    while True:
+        try:
+            admin = KafkaAdminClient(bootstrap_servers=BOOTSTRAP)
+            if TOPIC not in admin.list_topics():
+                admin.create_topics([NewTopic(TOPIC, num_partitions=1, replication_factor=1)])
+            admin.close()
+            return
+        except Exception:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2)
+
+
+def _wait_for_consumer_groups(*prefixes: str) -> None:
+    """A fresh broker takes a while to elect the group coordinator; wait until the fake workers commit."""
+    reader = LagReader(KafkaConfig(bootstrap_servers=BOOTSTRAP, topic=TOPIC))
+    try:
+        deadline = time.monotonic() + 90
+        while any(reader.lag(prefix) is None for prefix in prefixes):
+            if time.monotonic() > deadline:
+                raise TimeoutError("fake workers never committed consumer offsets")
+            time.sleep(1)
+    finally:
+        reader.close()
+
+
+def _create_databases() -> None:
+    conn = psycopg2.connect(PG.format("it"))
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        for name in ("vision_main", "crowd", "frs"):
+            cur.execute(f"DROP DATABASE IF EXISTS {name}")
+            cur.execute(f"CREATE DATABASE {name}")
+    conn.close()
+    _sql("vision_main", schema.MAIN)
+    _sql("crowd", schema.CROWD)
+    _sql("frs", schema.FRS)
+
+
+def _seed(crowd_port: int, frs_port: int) -> dict:
+    server = _one("vision_main", "INSERT INTO servers (server_ip, server_protocol, is_active) "
+                                 "VALUES ('127.0.0.1', 'http', true) RETURNING id::text")["id"]
+    functions = {}
+    for key, port in (("crowd-monitoring", crowd_port), ("ai-attendance", frs_port)):
+        function = _one("vision_main", "INSERT INTO functions (key, container_port, is_exelixi_activated) "
+                                       "VALUES (%s, %s, true) RETURNING id::text", (key, port))["id"]
+        functions[key] = _one("vision_main", "INSERT INTO server_functions (server_id, function_id, is_active) "
+                                             "VALUES (%s, %s, true) RETURNING id::text", (server, function))["id"]
+    region = _one("vision_main", "INSERT INTO camera_regions (name) VALUES ('Lobby') RETURNING id::text")["id"]
+    template = _one("vision_main", """
+        INSERT INTO cameras (name, region_id, type, ip, port, "user", password, timezone, rtsp_url, is_active, created_at)
+        VALUES ('Lobby cam', %s, 'ip', '10.0.0.5', 554, 'admin', 'secret', 'Asia/Dubai', 'rtsp://10.0.0.5/live',
+                true, now()) RETURNING id::text""", (region,))["id"]
+    for server_function in functions.values():
+        _sql("vision_main", "INSERT INTO function_camera_regions (server_function_id, camera_region_id, status) "
+                            "VALUES (%s, %s, 'assigned')", (server_function, region))
+
+    setting = _one("crowd", "INSERT INTO crowd_gathering_settings (name, selected_cameras) VALUES ('default', %s) "
+                            "RETURNING id", (Json([template]),))["id"]
+    _sql("crowd", "INSERT INTO crowd_gathering_camera_lines (camera_id, setting_id, line_start) VALUES (%s, %s, %s)",
+         (template, setting, Json({"x": 0.5, "y": 0.0})))
+    _sql("crowd", "INSERT INTO crowd_gathering_events (camera_id) VALUES (%s)", (template,))
+
+    _sql("frs", "INSERT INTO frs_settings (name, check_in_cameras, is_enabled) VALUES ('default', %s, true)",
+         (Json([template]),))
+    employees = {name: str(uuid.uuid4()) for name in ("a", "b", "c")}
+    attendance = {}
+    for name in ("a", "b"):
+        attendance[name] = _one("frs", """
+            INSERT INTO frs_attendance (employee_id, date, check_in_at, is_late, shift_working_days)
+            VALUES (%s, CURRENT_DATE, '2026-09-29 08:00:00+04', false, %s) RETURNING id::text""",
+            (employees[name], Json(["Mon", "Tue"])))["id"]
+    return {"template": template, "region": region, "employees": employees, "attendance": attendance}
+
+
+class AttendanceSideEffects:
+    """What a real attendance worker would do when a synthetic camera recognises employees."""
+
+    def __init__(self, seed: dict) -> None:
+        self.seed = seed
+        self.done = threading.Event()
+        self._lock = threading.Lock()
+
+    def __call__(self, camera: str, _payload: dict) -> None:
+        if camera == self.seed["template"]:
+            return
+        with self._lock:
+            if self.done.is_set():
+                return
+            employees, attendance, template = self.seed["employees"], self.seed["attendance"], self.seed["template"]
+            _sql("frs", "UPDATE frs_attendance SET check_in_at = now(), is_late = true WHERE id = %s",
+                 (attendance["a"],))
+            _sql("frs", "INSERT INTO frs_recognition_events (employee_id, attendance_id, camera_id) VALUES (%s, %s, %s)",
+                 (employees["a"], attendance["a"], camera))
+            new_row = _one("frs", "INSERT INTO frs_attendance (employee_id, date, check_in_at) "
+                                  "VALUES (%s, CURRENT_DATE, now()) RETURNING id::text", (employees["c"],))["id"]
+            _sql("frs", "INSERT INTO frs_recognition_events (employee_id, attendance_id, camera_id) VALUES (%s, %s, %s)",
+                 (employees["c"], new_row, camera))
+            _sql("frs", "UPDATE frs_attendance SET is_late = true WHERE id = %s", (attendance["b"],))
+            for source in (camera, template):
+                _sql("frs", "INSERT INTO frs_recognition_events (employee_id, attendance_id, camera_id) "
+                            "VALUES (%s, %s, %s)", (employees["b"], attendance["b"], source))
+            self.done.set()
+
+
+def _event_image(events: Path, camera: str) -> str:
+    """Write an event image the way the crowd worker lays them out; returns the path relative to EVENTS_DIR."""
+    relative = f"crowd-monitoring/crowd_monitoring_images/{camera}/2026-09-29/hc_event.jpg"
+    (events / relative).parent.mkdir(parents=True, exist_ok=True)
+    (events / relative).write_bytes(b"\xff\xd8\xff\xd9")
+    return relative
+
+
+def _crowd_event_writer(template: str, events: Path):
+    seen: set[str] = set()
+
+    def on_frame(camera: str, _payload: dict) -> None:
+        if camera != template and camera not in seen:
+            seen.add(camera)
+            _sql("crowd", "INSERT INTO crowd_gathering_events (camera_id, image_path) VALUES (%s, %s)",
+                 (camera, _event_image(events, camera)))
+
+    return on_frame
+
+
+class FrameRouter:
+    """Publishes the template camera's frames like the real frame router."""
+
+    def __init__(self, camera: str, image: Path) -> None:
+        self._camera = camera
+        self._image = image
+        self._stop = threading.Event()
+        self._producer = KafkaProducer(bootstrap_servers=BOOTSTRAP,
+                                       value_serializer=lambda value: json.dumps(value).encode("utf-8"))
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._producer.close()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            now = time.time()
+            self._producer.send(TOPIC, {"camera_id": self._camera, "timestamp": now, "image_path": str(self._image),
+                                        "frame_date": time.strftime("%Y-%m-%d"), "frame_hour": time.strftime("%H")})
+            self._stop.wait(0.25)
+
+
+@pytest.fixture(scope="module")
+def stack(tmp_path_factory):
+    if MANAGE_STACK:
+        subprocess.run(COMPOSE + ["up", "-d", "--wait"], check=True)
+    workers: list[FakeWorker] = []
+    router = None
+    try:
+        _wait_for_kafka()
+        _create_databases()
+        tmp = tmp_path_factory.mktemp("loadgen")
+        events = tmp / "events"
+        # GPU: 2 cameras per model copy, 100 MB each, 200 MB free -> 4 cameras (1 real + 3 synthetic).
+        crowd = FakeWorker("crowd-monitoring", PG.format("vision_main"), PG.format("crowd"),
+                           "crowd_gathering_settings", "selected_cameras", BOOTSTRAP, TOPIC, SECRET, max_cameras=4)
+        frs = FakeWorker("ai-attendance", PG.format("vision_main"), PG.format("frs"),
+                         "frs_settings", "check_in_cameras", BOOTSTRAP, TOPIC, SECRET)
+        seed = _seed(crowd.port, frs.port)
+        _event_image(events, seed["template"])
+        crowd.on_frame = _crowd_event_writer(seed["template"], events)
+        side_effects = AttendanceSideEffects(seed)
+        frs.on_frame = side_effects
+        workers = [crowd, frs]
+        for worker in workers:
+            worker.start()
+
+        image = tmp / "frame.jpg"
+        image.write_bytes(b"\xff\xd8\xff\xd9")
+        router = FrameRouter(seed["template"], image)
+        router.start()
+
+        (tmp / "loadgen.yaml").write_text(f"""
+environment: staging
+kafka: {{bootstrap_servers: "{BOOTSTRAP}", topic: {TOPIC}}}
+database: {{main_url: "{PG.format('vision_main')}"}}
+auth: {{jwt_secret_key: {SECRET}, jwt_algorithm: HS256}}
+frames: {{shared_mount_path: "{tmp.as_posix()}", corpus_dir: "{(tmp / 'corpus').as_posix()}", timezone: Asia/Dubai}}
+registration: {{template_camera_id: "{seed['template']}", sync_timeout_s: 30}}
+output: {{results_dir: "{(tmp / 'results').as_posix()}", sample_interval_s: 1}}
+events: {{dir: "{events.as_posix()}"}}
+workers:
+  crowd: {{db_url: "{PG.format('crowd')}", cameras_per_worker: 2, vram_per_worker_mb: 100, gpu_free_vram_mb: 200}}
+  attendance: {{db_url: "{PG.format('frs')}"}}
+""", encoding="utf-8")
+        (tmp / "scenario.yaml").write_text("""
+name: it-latency
+type: latency
+workers: [crowd, attendance]
+fps_per_camera: 4
+levels: [2, 3, 5]
+level_duration_s: 14
+settle_s: 2
+saturation: {window_s: 8, max_staleness_s: 5, max_lag_growth_per_s: 5}
+guard: {baseline_samples: 2, grace_s: 5}
+""", encoding="utf-8")
+        _wait_for_consumer_groups("crowd-monitoring_consumer_group_", "ai-attendance_consumer_group_")
+        yield {"tmp": tmp, "events": events, "seed": seed, "crowd": crowd, "frs": frs, "side_effects": side_effects}
+    finally:
+        if router:
+            router.stop()
+        for worker in workers:
+            worker.stop()
+        if MANAGE_STACK:
+            subprocess.run(COMPOSE + ["down", "-v"], check=False)
+
+
+def _app(stack):
+    return build_app_config(str(stack["tmp"] / "loadgen.yaml"), worker_settings_spec="")
+
+
+def _cli(stack, *args: str) -> int:
+    return cli.main(["--config", str(stack["tmp"] / "loadgen.yaml"), "--worker-settings", "", *args])
+
+
+def test_check_preflight_passes(stack, capsys):
+    assert _cli(stack, "check", "--scenario", str(stack["tmp"] / "scenario.yaml")) == 0
+    output = capsys.readouterr().out
+    assert "Preflight passed" in output and "consumer group crowd-monitoring_consumer_group_" in output
+    assert "room for 3 synthetic cameras next to 1 real" in output
+    assert "caps the run at 3 synthetic cameras" in output and "events dir" in output
+
+
+def test_capture_then_replay_corpus(stack):
+    app = _app(stack)
+    result = capture_corpus(app.kafka, app.frames, "it-corpus", duration_s=3, source_camera_ids=[stack["seed"]["template"]])
+    assert result.frames >= 5 and result.missing_images == 0
+    source = CorpusSource(app.frames, "it-corpus")
+    first, second = source.frame_for(0), source.frame_for(0)
+    assert first["image_path"] != second["image_path"] and Path(first["image_path"]).is_file()
+    with pytest.raises(FileExistsError):
+        capture_corpus(app.kafka, app.frames, "it-corpus", duration_s=1, source_camera_ids=[])
+
+
+def test_run_publishes_measures_and_cleans_up(stack):
+    app = _app(stack)
+    scenario = load_scenario(str(stack["tmp"] / "scenario.yaml"), app)
+    seed = stack["seed"]
+    template = seed["template"]
+    syncs_before = stack["crowd"].syncs
+
+    summary = Runner(app, scenario, RunOptions()).run()
+
+    assert summary.get("error") is None, summary.get("error")
+    assert summary["aborted"] is None
+    assert summary["producer"]["acked"] > 50 and summary["producer"]["errors"] == 0
+    assert summary["guard_baseline_real_cameras"] == {"crowd": 1, "attendance": 1}
+    # The GPU cap (3 synthetic next to 1 real) drops level 5, so the worker never refuses a sync.
+    assert "3 synthetic cameras" in summary["capacity_note"]
+    assert [stage["cameras"] for stage in summary["stages"]] == [2, 3]
+    assert stack["crowd"].peak_cameras == 4
+    for stage in summary["stages"]:
+        for name in ("crowd", "attendance"):
+            entry = stage["workers"][name]
+            assert entry["verdict"]["kept_up"], entry["verdict"]
+            assert entry["staleness_p95"] is not None and entry["staleness_p95"] < 5
+        assert stage["workers"]["crowd"]["gpu_workers_expected"] == 2
+        assert set(stage["workers"]["crowd"]["gpu_workers"]) <= {"0", "1"}
+    # One re-sync per stage plus the teardown sync.
+    assert stack["crowd"].syncs - syncs_before == 3 and stack["frs"].syncs >= 3
+    assert stack["side_effects"].done.is_set()
+
+    run_dir = Path(app.output.results_dir) / summary["run_id"]
+    with (run_dir / "timeseries.csv").open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows and any(row["crowd_lag"] not in ("", "None") for row in rows)
+
+    teardown = summary["teardown"]
+    assert teardown["errors"] == []
+    assert Registry.load(run_dir / "registry.json").status == "done"
+
+    assert _one("vision_main", "SELECT count(*) AS n FROM cameras WHERE name LIKE 'loadtest-%%'")["n"] == 0
+    assert _one("vision_main", "SELECT count(*) AS n FROM camera_regions WHERE name LIKE 'loadtest-%%'")["n"] == 0
+    assert _one("vision_main", "SELECT count(*) AS n FROM function_camera_regions")["n"] == 2
+    template_row = _one("vision_main", "SELECT rtsp_url FROM cameras WHERE id = %s", (template,))
+    assert template_row["rtsp_url"] == "rtsp://10.0.0.5/live"
+
+    assert _one("crowd", "SELECT selected_cameras::text AS c FROM crowd_gathering_settings")["c"] == json.dumps([template])
+    assert _one("crowd", "SELECT count(*) AS n FROM crowd_gathering_camera_lines")["n"] == 1
+    assert [row["camera_id"] for row in _sql("crowd", "SELECT camera_id FROM crowd_gathering_events", fetch=True)] == [template]
+    assert teardown["steps"]["purge:crowd_gathering_events"]["files_deleted"] == 3
+    images = stack["events"] / "crowd-monitoring" / "crowd_monitoring_images"
+    assert sorted(path.name for path in images.iterdir()) == [template]
+
+    assert _one("frs", "SELECT check_in_cameras AS c FROM frs_settings")["c"] == [template]
+    a = _one("frs", "SELECT check_in_at, is_late, shift_working_days FROM frs_attendance WHERE id = %s",
+             (seed["attendance"]["a"],))
+    assert a["is_late"] is False and a["check_in_at"].isoformat() == "2026-09-29T04:00:00+00:00"
+    assert a["shift_working_days"] == ["Mon", "Tue"]
+    assert _one("frs", "SELECT count(*) AS n FROM frs_attendance WHERE employee_id = %s",
+                (seed["employees"]["c"],))["n"] == 0
+    assert _one("frs", "SELECT is_late FROM frs_attendance WHERE id = %s", (seed["attendance"]["b"],))["is_late"] is True
+    assert teardown["manual_review"]["attendance"] == [seed["attendance"]["b"]]
+    assert teardown["restored"]["attendance"] == {"restored": 1, "deleted": 1}
+    events = _sql("frs", "SELECT camera_id::text AS camera FROM frs_recognition_events", fetch=True)
+    assert [row["camera"] for row in events] == [template]
+
+
+def test_orphan_cleanup_after_crash(stack):
+    app = _app(stack)
+    registry = Registry.create(app.output.results_dir, "crashed-run", app.environment)
+    Registrar(app, ["crowd"], registry).setup(2, stack["seed"]["template"])
+    Path(registry.path).unlink()
+
+    orphans = find_orphans(app)
+    assert set(orphans) == {"crashed-run"} and len(orphans["crashed-run"]["camera_ids"]) == 2
+
+    rebuilt = registry_for_orphan(app, app.output.results_dir, "crashed-run", orphans["crashed-run"])
+    report = Registrar(app, app.configured_workers(), rebuilt).teardown(keep_events=False)
+    assert report["errors"] == [], report["errors"]
+    assert find_orphans(app) == {}
+    assert _cli(stack, "cleanup", "--orphans") == 0
+    assert _one("crowd", "SELECT selected_cameras::text AS c FROM crowd_gathering_settings")["c"] == \
+        json.dumps([stack["seed"]["template"]])
+    assert _one("crowd", "SELECT count(*) AS n FROM crowd_gathering_camera_lines")["n"] == 1

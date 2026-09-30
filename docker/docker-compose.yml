@@ -1,0 +1,28 @@
+# Standalone load generator (several workers in one run). From this folder:
+#   docker compose run --rm load-generator check --worker crowd --worker emotion
+#   docker compose run --rm load-generator run --scenario latency --worker crowd --worker emotion
+#   docker compose run --rm load-generator cleanup --orphans
+services:
+  load-generator:
+    build:
+      context: ..
+    image: vision-load-generator:latest
+    env_file: .env
+    environment:
+      LOADGEN_RESULTS_DIR: /results
+    networks: [vision]
+    volumes:
+      # Frames and events must be mounted at the SAME paths the workers use (FLAGGED: confirm).
+      # For named Docker volumes, set the *_SOURCE variables to their names and declare them
+      # under `volumes:` below as external.
+      - ${FRAMES_SOURCE:?set FRAMES_SOURCE in .env}:${FRAMES_MOUNT_PATH:-/data/frames}
+      - ${EVENTS_SOURCE:?set EVENTS_SOURCE in .env}:${EVENTS_DIR:?set EVENTS_DIR in .env}
+      - ./results:/results
+      - ./config:/loadgen/config:ro
+    # Teardown removes synthetic cameras and events; give it time after `docker stop`.
+    stop_grace_period: 3m
+
+networks:
+  vision:
+    external: true
+    name: ${DOCKER_NETWORK:?set DOCKER_NETWORK in .env}

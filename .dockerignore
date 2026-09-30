@@ -1,0 +1,12 @@
+.git/
+.venv/
+.pytest_cache/
+**/__pycache__/
+*.egg-info/
+build/
+dist/
+docker/.env
+docker/results/
+loadgen_results/
+tests/
+docs/
