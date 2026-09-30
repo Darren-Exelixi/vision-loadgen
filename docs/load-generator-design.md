@@ -175,7 +175,11 @@ Per sample (default every 5 s), for each worker:
 - **Synthetic staleness** per active synthetic camera = now − latest processed frame
   timestamp (or time since the camera was activated if never processed). Because the
   generator sets the frame timestamps, this is end-to-end latency with no clock skew.
-- **Real staleness** — the same for the worker's real cameras.
+- **Real staleness** — the same for the worker's real cameras. Their timestamps come from the
+  ingestion side, so "now" is shifted by the worker's clock offset, estimated from the HTTP
+  `Date` headers of its responses (1 s resolution, narrowed by intersecting successive
+  responses). The same correction applies to the template pick; `summary.json` records the
+  offset. The guard compares against its own baseline, so an offset cancels out there anyway.
 - **Consumer lag** of the worker's newest consumer group, and its growth rate.
 - Status reachability and `running`.
 
@@ -270,9 +274,9 @@ so `pyproject.toml` caps it below 3; with 3.x the tool runs without the lag metr
 4. **Consumer-group prefix for AI attendance** — `{function_key}_consumer_group_`. Confirmed for
    crowd and sentiment analysis, which force `FUNCTION_NAME` to their function key; unverified
    for attendance. Override per worker if different.
-5. **`processed_buffer_info.timestamp`** — assumed to be the Kafka message timestamp. If it
-   is the processing time instead, staleness still measures "is this camera being processed"
-   but not exact latency.
+5. **`processed_buffer_info.timestamp`** — the Kafka message timestamp: confirmed for crowd
+   (`KafkaFramePipeline` passes `payload["timestamp"]` through to `FrameStore.push_frame`), and
+   assumed for the other workers built on the same pipeline.
 6. **AI attendance worker** was not available to review. Assumed to expose the same
    `/api/v1/worker/sync` and `/status` and to process frames through `KafkaFramePipeline`.
    Its processing hours may restrict when load is applied.

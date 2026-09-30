@@ -9,7 +9,7 @@ from typing import Any
 
 from vision_loadgen import db
 from vision_loadgen.config import AppConfig, ConfigError, load_scenario
-from vision_loadgen.environment import DEFAULT_WORKER_SETTINGS, build_app_config
+from vision_loadgen.environment import DEFAULT_WORKER_SETTINGS, build_app_config, load_env_file
 from vision_loadgen.kafka_io import LagReader
 from vision_loadgen.registrar import Registrar, find_orphans, registry_for_orphan
 from vision_loadgen.registry import REGISTRY_NAME, Registry
@@ -28,6 +28,9 @@ def _parser() -> argparse.ArgumentParser:
                     "worker's service) to test that worker with its own settings, or standalone with env vars.",
     )
     parser.add_argument("--config", help="Optional YAML/JSON file merged over the built-in presets")
+    parser.add_argument("--env-file",
+                        help="KEY=value file loaded before anything else; variables already set win "
+                             "(default: LOADGEN_ENV_FILE, else ./.env if present; '' to skip)")
     parser.add_argument("--environment", choices=["staging", "production"],
                         help="Overrides LOADGEN_ENVIRONMENT (unset means production)")
     parser.add_argument("--worker-settings", default=DEFAULT_WORKER_SETTINGS,
@@ -87,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     logging.getLogger("kafka").setLevel(logging.WARNING)
     try:
+        env_file = load_env_file(args.env_file)
+        if env_file:
+            log.info("Loaded variables from %s (already-set variables kept)", env_file.resolve())
         app = build_app_config(args.config, args.worker_settings, _overrides(args))
         if app.local_worker:
             log.info("Running beside the %s worker (%s)", app.local_worker, app.workers[app.local_worker].function_key)
@@ -108,6 +114,18 @@ def _scenario(app: AppConfig, args):
         for name in scenario.workers:
             app.workers[name].server_ip = args.server_ip
     return scenario
+
+
+def _report_clock(name: str, client: WorkerClient, ok, warn) -> None:
+    for _ in range(4):  # a few more responses narrow the 1 s Date resolution
+        client.status()
+    if not client.clock.known:
+        warn(f"{name}: no Date header, so clock offset is unknown (real-camera staleness uncorrected)")
+        return
+    message = (f"{name}: worker clock is {client.clock.seconds:+.1f}s vs this machine "
+               f"(±{client.clock.error_s:.1f}s); real-camera staleness is corrected for it, "
+               "synthetic staleness does not depend on it")
+    (warn if abs(client.clock.seconds) > 2 else ok)(message)
 
 
 def _check(app: AppConfig, args) -> int:
@@ -157,6 +175,7 @@ def _check(app: AppConfig, args) -> int:
                         real_cameras[name] = len(status.active_cameras)
                         ok(f"{name}: status reachable, running={status.running}, "
                            f"{len(status.active_cameras)} active cameras")
+                        _report_clock(name, client, ok, warn)
                     except Exception as exc:
                         fail(f"{name}: /worker/status failed: {exc}")
                     if worker.note:

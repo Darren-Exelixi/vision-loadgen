@@ -82,8 +82,9 @@ class Registrar:
     def pick_template(self, max_age_s: float = 60.0) -> str:
         """The real camera the first target worker processed most recently."""
         name = self.worker_names[0]
-        status = self.clients[name].status()
-        now = time.time()
+        client = self.clients[name]
+        status = client.status()
+        now = time.time() + client.clock.seconds  # real cameras are stamped in the worker's time
         live = {camera_id: at for camera_id, at in status.processed_timestamps.items()
                 if camera_id in status.active_cameras and now - at <= max_age_s}
         if not live:

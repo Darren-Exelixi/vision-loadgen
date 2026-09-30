@@ -317,6 +317,9 @@ def test_run_publishes_measures_and_cleans_up(stack):
     assert summary["aborted"] is None
     assert summary["producer"]["acked"] > 50 and summary["producer"]["errors"] == 0
     assert summary["guard_baseline_real_cameras"] == {"crowd": 1, "attendance": 1}
+    # Fake workers share this machine's clock, so the estimated offset is about zero.
+    for clock in summary["clock_offset"].values():
+        assert clock["offset_s"] is not None and abs(clock["offset_s"]) <= 1.0
     # The GPU cap (3 synthetic next to 1 real) drops level 5, so the worker never refuses a sync.
     assert "3 synthetic cameras" in summary["capacity_note"]
     assert [stage["cameras"] for stage in summary["stages"]] == [2, 3]

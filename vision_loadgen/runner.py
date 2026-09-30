@@ -175,6 +175,7 @@ class Runner:
             summary["teardown"] = registrar.teardown(self.options.keep_events)
 
         summary["ended_at"] = time.time()
+        summary["clock_offset"] = {name: client.clock.as_dict() for name, client in registrar.clients.items()}
         summary["aborted"] = self.abort_reason
         summary["skipped_no_source_frame"] = self.skipped_no_source
         self._add_results(summary, registry)

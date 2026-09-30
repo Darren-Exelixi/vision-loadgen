@@ -73,6 +73,22 @@ estimates free VRAM with `nvidia-smi`.
 `docker compose run --rm load-generator run --scenario latency --worker crowd --worker emotion`.
 `config/example.yaml` there shows `--config` overrides (mounted at `/loadgen/config`).
 
+**From your own machine**, when the staging Postgres, Kafka and worker ports are reachable by IP:
+put the variables from `docker/.env.example` (IPs instead of container names) in `.env` at the
+repository root, then
+
+```powershell
+.venv\Scripts\python -m vision_loadgen check --worker crowd --server-ip <worker's server IP> --scenario latency
+.venv\Scripts\python -m vision_loadgen run   --worker crowd --server-ip <worker's server IP> --scenario latency
+```
+
+`./.env` is loaded automatically (or `--env-file` / `LOADGEN_ENV_FILE`); variables already set in
+the shell win. Frames need not be reachable: only pointers are republished and the worker reads
+the JPEGs from its own disk. Kafka must advertise an address this machine can resolve (else add
+the broker's name to the hosts file). Without `EVENTS_DIR` locally, event rows are deleted but
+their files stay on the server (the report says so). There is no `nvidia-smi` estimate from here,
+so set `gpu_free_vram_mb` with `--config` to cap stages at GPU capacity.
+
 ## Commands
 
 ```bash
@@ -88,11 +104,13 @@ python -m vision_loadgen cleanup --orphans [--yes]
 `vision-loadgen` is the same CLI when installed with pip.
 
 - `--scenario`: `throughput`, `latency`, `soak`, or a scenario file (YAML or JSON).
-- `--worker`: name (`crowd`, `emotion`, `attendance`) or function key; default: the worker it runs beside.
+- `--worker`: preset name (`crowd`, `emotion`, `attendance`) or function key (`crowd-monitoring`), not
+  a container name; the worker's URL comes from `vision_main_db`. Default: the worker it runs beside.
 - `--template-camera`: the real camera to copy; default: the worker's freshest live camera.
 - `--server-ip`: pick a deployment when a module runs on several servers.
 - `--set key=value`: scenario overrides (dotted keys, JSON values).
 - `--config file`: YAML/JSON merged over the presets (new workers, `gpu_free_vram_mb`, table names).
+- `--env-file file`: `KEY=value` file loaded first (default `LOADGEN_ENV_FILE`, else `./.env`).
 - `--environment staging|production`: overrides `LOADGEN_ENVIRONMENT`. **Unset means production**,
   which needs `--allow-production`.
 - `--keep-events`: keep events (rows and files) created by synthetic cameras.
@@ -135,6 +153,12 @@ A worker "keeps up" at a stage when, over the last `saturation.window_s`, synthe
 staleness p95 stays under `max_staleness_s` and consumer lag grows no faster than
 `max_lag_growth_per_s`. Workers drop frames under overload instead of queueing, so staleness is
 the main signal.
+
+Clocks: the worker reports the timestamp carried in each Kafka message. Synthetic messages are
+stamped by the load generator, so synthetic staleness never depends on clock differences between
+machines. Real cameras are stamped on the ingestion side; their staleness (report and template
+pick) is corrected by the worker's clock offset, estimated from its HTTP `Date` headers. `check`
+prints the offset and `summary.json` records it under `clock_offset`.
 
 ## Safety
 

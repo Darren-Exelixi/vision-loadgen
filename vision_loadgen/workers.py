@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import email.utils
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from jose import jwt
 
@@ -82,12 +85,57 @@ class WorkerStatus:
     processed_timestamps: dict[str, float] = field(default_factory=dict)
 
 
+class ClockOffset:
+    """How far the worker's clock is ahead of this machine's, from the HTTP Date header.
+
+    Date has 1 s resolution, so each response only bounds the offset to an interval; intersecting
+    the intervals of successive responses narrows it to about the round-trip time.
+    """
+
+    def __init__(self) -> None:
+        self._low: Optional[float] = None
+        self._high: Optional[float] = None
+
+    def add(self, sent: float, received: float, server_second: float) -> None:
+        # The server stamped Date at some local time in [sent, received], within the second
+        # [server_second, server_second + 1).
+        low, high = server_second - received, server_second + 1.0 - sent
+        if self._low is None or self._high is None or low > self._high or high < self._low:
+            # First response, or a clock was stepped since: start over.
+            self._low, self._high = low, high
+        else:
+            self._low, self._high = max(self._low, low), min(self._high, high)
+
+    @property
+    def known(self) -> bool:
+        return self._low is not None
+
+    @property
+    def seconds(self) -> float:
+        """Best estimate; 0.0 until a response with a Date header arrives."""
+        if self._low is None or self._high is None:
+            return 0.0
+        return (self._low + self._high) / 2
+
+    @property
+    def error_s(self) -> Optional[float]:
+        if self._low is None or self._high is None:
+            return None
+        return (self._high - self._low) / 2
+
+    def as_dict(self) -> dict[str, Any]:
+        if not self.known:
+            return {"offset_s": None, "error_s": None}
+        return {"offset_s": round(self.seconds, 3), "error_s": round(self.error_s or 0.0, 3)}
+
+
 class WorkerClient:
     def __init__(self, name: str, base_url: str, api_prefix: str, auth: AuthConfig, timeout_s: float = 10.0) -> None:
         self.name = name
         self._root = f"{base_url.rstrip('/')}/{api_prefix.strip('/')}".rstrip("/")
         self._auth = auth
         self._timeout_s = timeout_s
+        self.clock = ClockOffset()
 
     def sync(self) -> WorkerStatus:
         return parse_status(self._call("POST", "/worker/sync", timeout_s=60))
@@ -104,12 +152,24 @@ class WorkerClient:
             method=method,
         )
         try:
+            sent = time.time()
             with urllib.request.urlopen(req, timeout=timeout_s) as response:
-                body = json.loads(response.read().decode("utf-8") or "{}")
+                raw = response.read()
+                self._record_clock(sent, time.time(), response.headers.get("Date"))
+                body = json.loads(raw.decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             raise RuntimeError(f"{method} {url} returned HTTP {exc.code}: {detail}") from exc
         return _data(body)
+
+    def _record_clock(self, sent: float, received: float, date_header: Optional[str]) -> None:
+        if not date_header:
+            return
+        try:
+            server_second = email.utils.parsedate_to_datetime(date_header).timestamp()
+        except (TypeError, ValueError):
+            return
+        self.clock.add(sent, received, server_second)
 
 
 def _data(body) -> dict:

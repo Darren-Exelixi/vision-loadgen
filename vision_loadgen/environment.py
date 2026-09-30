@@ -50,6 +50,34 @@ def load_worker_settings(spec: str = DEFAULT_WORKER_SETTINGS) -> Optional[Any]:
     return settings
 
 
+def load_env_file(path: Optional[str] = None, environ: Optional[dict[str, str]] = None) -> Optional[Path]:
+    """Load KEY=value lines into the environment; variables already set win.
+
+    `path` (--env-file), else LOADGEN_ENV_FILE, else ./.env when it exists. '' disables it.
+    Returns the file loaded, if any.
+    """
+    environ = os.environ if environ is None else environ
+    if path is None:
+        path = environ.get("LOADGEN_ENV_FILE")
+        explicit = path is not None
+        path = ".env" if path is None else path
+    else:
+        explicit = True
+    if not path:
+        return None
+    env_file = Path(path)
+    if not env_file.is_file():
+        if explicit:
+            raise ConfigError(f"env file not found: {env_file}")
+        return None
+    from dotenv import dotenv_values
+
+    for key, value in dotenv_values(env_file).items():
+        if value is not None and key not in environ:
+            environ[key] = value
+    return env_file
+
+
 def _package_env() -> dict[str, str]:
     """Shared defaults shipped in vision_shared/.env, when vision_shared is installed (worker images).
 

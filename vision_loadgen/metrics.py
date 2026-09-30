@@ -98,7 +98,10 @@ class Sampler:
                 running=status.running,
                 lag=lag,
                 synthetic_staleness=list(by_camera.values()),
-                real_staleness=real_staleness(now, status.active_cameras, self._synthetic_ids, status.processed_timestamps),
+                # Real cameras' timestamps come from the ingestion side's clock, so compare them in
+                # the worker's time. Synthetic ones are stamped by this process: no correction.
+                real_staleness=real_staleness(now + client.clock.seconds, status.active_cameras,
+                                              self._synthetic_ids, status.processed_timestamps),
                 gpu_staleness=group_by_gpu_worker(by_camera, gpu_worker_map(status.active_cameras, cameras_per_worker))
                 if cameras_per_worker else {},
             ))
