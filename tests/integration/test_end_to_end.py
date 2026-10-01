@@ -20,7 +20,7 @@ from kafka.errors import KafkaError
 from psycopg2.extras import Json, RealDictCursor
 
 from vision_loadgen import cli
-from vision_loadgen.config import KafkaConfig, load_scenario
+from vision_loadgen.config import ConfigError, KafkaConfig, load_scenario
 from vision_loadgen.environment import build_app_config
 from vision_loadgen.kafka_io import LagReader
 from vision_loadgen.registrar import Registrar, find_orphans, registry_for_orphan
@@ -404,6 +404,84 @@ def test_run_publishes_measures_and_cleans_up(stack):
     assert teardown["restored"]["attendance"] == {"restored": 1, "deleted": 1}
     events = _sql("frs", "SELECT camera_id::text AS camera FROM frs_recognition_events", fetch=True)
     assert [row["camera"] for row in events] == [template]
+
+
+def test_video_corpus_with_video_camera_template(stack, capsys):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    from vision_loadgen import video_camera
+
+    app = _app(stack)
+    tmp = stack["tmp"]
+    clip = tmp / "clip.avi"
+    writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"MJPG"), 20.0, (64, 48))
+    for index in range(40):
+        writer.write(np.full((48, 64, 3), index * 6, dtype=np.uint8))
+    writer.release()
+    image_root = "/app/events/loadgen_corpus/it-video"
+    assert _cli(stack, "corpus", "from-video", "--video", str(clip), "--name", "it-video", "--fps", "4",
+                "--image-root", image_root) == 0
+    assert "Wrote 8 frames" in capsys.readouterr().out
+
+    template = stack["seed"]["template"]
+    camera = video_camera.add_video_camera(app, "IT video", template, ["crowd"], zones_from=template, corpus="it-video")
+    assert camera["name"] == "loadgen-video-it-video"
+    assert camera["cloned_rows"] == {"crowd:crowd_gathering_camera_lines": 1}
+    assert [row["id"] for row in video_camera.list_video_cameras(app)] == [camera["id"]]
+    row = _one("vision_main", "SELECT is_active, rtsp_url FROM cameras WHERE id = %s", (camera["id"],))
+    assert row["is_active"] is False and row["rtsp_url"] == ""
+
+    scenario_path = tmp / "video-scenario.yaml"
+    scenario_path.write_text("""
+name: it-video
+type: latency
+workers: [crowd]
+fps_per_camera: 4
+levels: [2]
+level_duration_s: 10
+settle_s: 2
+saturation: {window_s: 6, max_staleness_s: 5, max_lag_growth_per_s: 5}
+guard: {baseline_samples: 2, grace_s: 5}
+source: {mode: corpus, corpus_name: it-video}
+""", encoding="utf-8")
+    assert _cli(stack, "check", "--scenario", str(scenario_path), "--template-camera", camera["id"]) == 0
+    output = capsys.readouterr().out
+    assert "corpus it-video: 8 frames sampled at 4.0 fps, read from /app/events/loadgen_corpus/it-video" in output
+    assert "cannot be checked from here" in output
+
+    seen: list[dict] = []
+    crowd = stack["crowd"]
+    original = crowd.on_frame
+
+    def record(camera_id, payload):
+        if payload.get("loadgen"):
+            seen.append(payload)
+        if original:
+            original(camera_id, payload)
+
+    crowd.on_frame = record
+    try:
+        app.registration.template_camera_id = camera["id"]
+        summary = Runner(app, load_scenario(str(scenario_path), app), RunOptions()).run()
+    finally:
+        crowd.on_frame = original
+    assert summary.get("error") is None, summary.get("error")
+    assert summary["template_camera_id"] == camera["id"]
+    assert summary["stages"][0]["workers"]["crowd"]["verdict"]["kept_up"], summary["stages"][0]
+    assert seen and all(payload["image_path"].startswith(image_root + "/") for payload in seen)
+    assert len({payload["camera_id"] for payload in seen}) == 2
+    assert summary["teardown"]["errors"] == []
+
+    # Teardown removed the run's cameras but kept the video camera; `remove` deletes it.
+    assert _one("vision_main", "SELECT count(*) AS n FROM cameras WHERE name LIKE 'loadtest-%%'")["n"] == 0
+    assert [row["id"] for row in video_camera.list_video_cameras(app)] == [camera["id"]]
+    with pytest.raises(ConfigError):
+        video_camera.remove_video_camera(app, template)
+    report = video_camera.remove_video_camera(app, camera["id"])
+    assert report["errors"] == [] and report["camera"] == "deleted"
+    assert report["rows"]["crowd:crowd_gathering_camera_lines"] == 1
+    assert video_camera.list_video_cameras(app) == []
 
 
 def test_orphan_cleanup_after_crash(stack):

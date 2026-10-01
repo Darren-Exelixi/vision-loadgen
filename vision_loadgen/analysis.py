@@ -103,7 +103,8 @@ def stage_verdict(samples: list[WorkerSample], window_start: float, cfg: Saturat
     growth = slope([(sample.t, float(sample.lag)) for sample in window if sample.lag is not None])
     reasons = []
     if p95 is None:
-        reasons.append("no synthetic cameras measured")
+        # Also what a worker that cannot read the frames' image_path looks like.
+        reasons.append("no synthetic cameras measured (no frames processed: can the worker read image_path?)")
     elif p95 > cfg.max_staleness_s:
         reasons.append(f"staleness p95 {p95:.1f}s > {cfg.max_staleness_s:.1f}s")
     if growth > cfg.max_lag_growth_per_s:

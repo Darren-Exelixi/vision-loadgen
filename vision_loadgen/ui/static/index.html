@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vision-loadgen</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #596273; --line: #e3e6eb;
+  --accent: #2f6fde; --on-accent: #ffffff; --ok: #1a7f44; --warn: #96620f; --bad: #c8372d; --code: #f0f2f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111418; --panel: #1a1f26; --text: #e6e9ee; --muted: #98a2b3; --line: #2b323c;
+          --accent: #6ea0ff; --on-accent: #0b1220; --ok: #4cc38a; --warn: #e2b04a; --bad: #f2766b; --code: #13171c; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 17px; margin: 0; }
+.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--code); color: var(--muted); }
+.badge.prod { background: var(--bad); color: #fff; }
+header .spacer { flex: 1; }
+header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+main { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
+@media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+section.card h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+section.card h2 .step { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+input[type=text], input[type=number], select, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+textarea { font-family: ui-monospace, Consolas, monospace; font-size: 12px; min-height: 52px; }
+.row { display: flex; gap: 8px; } .row > * { flex: 1; }
+.checks { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
+.checks label { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--text); font-size: 13px; }
+button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+td.mono, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; word-break: break-all; }
+tr.clickable { cursor: pointer; } tr.clickable:hover { background: var(--code); }
+.muted { color: var(--muted); font-size: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.tile .k { color: var(--muted); font-size: 11.5px; } .tile .v { font-size: 18px; font-weight: 600; margin-top: 2px; word-break: break-word; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.chart { border: 1px solid var(--line); border-radius: 8px; padding: 8px; height: 240px; position: relative; }
+.chart h3 { font-size: 12px; margin: 0 0 4px; color: var(--muted); font-weight: 500; }
+.chart canvas { position: absolute; left: 8px; right: 8px; top: 26px; bottom: 8px; width: calc(100% - 16px) !important; height: calc(100% - 34px) !important; }
+pre.console { background: var(--code); border-radius: 8px; padding: 10px; max-height: 360px; overflow: auto; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-word; }
+pre.console .ok { color: var(--ok); } pre.console .warn { color: var(--warn); } pre.console .fail { color: var(--bad); font-weight: 600; }
+.ok-text { color: var(--ok); } .bad-text { color: var(--bad); } .warn-text { color: var(--warn); }
+.tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.tabs button.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.hint { background: var(--code); border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 12px; }
+progress { width: 100%; height: 8px; margin-top: 6px; }
+.error { color: var(--bad); font-size: 12px; margin-top: 6px; min-height: 1em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>vision-loadgen</h1>
+  <span id="env" class="badge">…</span>
+  <span class="spacer"></span>
+  <a href="http://localhost:3000/d/vision-loadgen/vision-loadgen" target="_blank" rel="noopener">Grafana ↗</a>
+</header>
+
+<main>
+<div>
+  <section class="card">
+    <h2><span class="step">1</span>Video corpus</h2>
+    <label>Video file</label>
+    <div class="row"><input type="file" id="videoFile" accept="video/*"><button id="uploadBtn">Upload</button></div>
+    <progress id="uploadProgress" value="0" max="100" hidden></progress>
+    <label>Uploaded video</label>
+    <select id="uploadedVideo"></select>
+    <div class="row">
+      <div><label>Corpus name</label><input type="text" id="corpusName" placeholder="lobby"></div>
+      <div><label>FPS</label><input type="number" id="corpusFps" value="5" min="0.1" step="0.5"></div>
+      <div><label>Max seconds</label><input type="number" id="corpusMax" value="0" min="0"></div>
+    </div>
+    <label>Image root on the workers (default /app/events/loadgen_corpus/&lt;name&gt;)</label>
+    <input type="text" id="imageRoot" placeholder="/app/events/loadgen_corpus/lobby">
+    <label>Copy target for the scp hint</label>
+    <input type="text" id="copyTarget" placeholder="admin1@10.10.10.22:/path/to/events/loadgen_corpus/">
+    <div class="actions"><button class="primary" id="corpusBtn">Create corpus</button></div>
+    <div class="error" id="corpusError"></div>
+    <table id="corporaTable"><thead><tr><th>Corpus</th><th>Frames</th><th>FPS</th><th>Read from</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span>Video camera (template)</h2>
+    <table id="camerasTable"><thead><tr><th>Name</th><th>Id</th><th></th></tr></thead><tbody></tbody></table>
+    <div class="row">
+      <div><label>Name</label><input type="text" id="camName" placeholder="Lobby video"></div>
+      <div><label>Corpus</label><select id="camCorpus"></select></div>
+    </div>
+    <label>Copy region/timezone from camera (id)</label>
+    <input type="text" id="camLike" placeholder="7797ee15-32d5-46b7-b736-ac078e9b9b8c">
+    <label>Copy zones from camera (id, optional)</label>
+    <input type="text" id="camZones">
+    <div class="actions"><button class="primary" id="camAddBtn">Add video camera</button><button id="camRefreshBtn">Refresh</button></div>
+    <div class="error" id="camError"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">3</span>Load test</h2>
+    <label>Workers</label>
+    <div class="checks" id="workers"></div>
+    <div class="row">
+      <div><label>Server IP</label><input type="text" id="serverIp" placeholder="10.10.10.22"></div>
+      <div><label>Scenario</label><select id="scenario"><option>latency</option><option>throughput</option><option>soak</option></select></div>
+    </div>
+    <label>Template camera (id)</label>
+    <input type="text" id="templateCamera">
+    <label>Frames from</label>
+    <div class="checks">
+      <label><input type="radio" name="source" value="corpus" checked> Corpus</label>
+      <label><input type="radio" name="source" value="live"> Live camera</label>
+    </div>
+    <select id="runCorpus" style="margin-top:6px"></select>
+    <label>Overrides (one key=value per line)</label>
+    <textarea id="overrides" placeholder="levels=[5,10,20]&#10;level_duration_s=120"></textarea>
+    <div class="checks" style="margin-top:8px">
+      <label><input type="checkbox" id="noGuard"> No guard (staging throughput)</label>
+      <label><input type="checkbox" id="keepEvents"> Keep events</label>
+    </div>
+    <div class="actions">
+      <button id="checkBtn">Check</button>
+      <button class="primary" id="runBtn">Run</button>
+      <button class="danger" id="stopBtn" disabled>Stop</button>
+    </div>
+    <div class="error" id="runError"></div>
+  </section>
+
+  <section class="card">
+    <h2>Cleanup</h2>
+    <p class="muted">Leftover synthetic cameras from crashed runs (video cameras are kept).</p>
+    <div class="actions" style="margin-top:0"><button id="orphansBtn">List leftovers</button><button class="danger" id="orphansYesBtn">Remove leftovers</button></div>
+  </section>
+</div>
+
+<div>
+  <section class="card">
+    <div class="tabs"><button id="tabLive" class="active">Live</button><button id="tabHistory">History</button></div>
+    <div id="viewTitle" class="muted">No run yet.</div>
+    <div class="tiles" id="tiles"></div>
+    <div class="charts">
+      <div class="chart"><h3>Synthetic staleness p95 (s)</h3><canvas id="cStaleness"></canvas></div>
+      <div class="chart"><h3>Kafka consumer lag (messages)</h3><canvas id="cLag"></canvas></div>
+      <div class="chart"><h3>Real-camera staleness above baseline (s)</h3><canvas id="cExcess"></canvas></div>
+      <div class="chart"><h3>Synthetic cameras and publish rate</h3><canvas id="cLoad"></canvas></div>
+    </div>
+    <h3 style="font-size:13px;margin:14px 0 6px">Stage verdicts</h3>
+    <table id="verdicts"><thead><tr><th>#</th><th>Stage</th><th>Worker</th><th>Verdict</th><th>p95</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="card" id="historyCard" hidden>
+    <h2>Past runs</h2>
+    <table id="runsTable"><thead><tr><th>Run</th><th>Scenario</th><th>Workers</th><th>Source</th><th>Stages</th><th>Result</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="card">
+    <h2>Output <span class="muted" id="jobTitle"></span></h2>
+    <pre class="console" id="console"></pre>
+    <table id="jobsTable" style="margin-top:10px"><thead><tr><th>Job</th><th>Command</th><th>Status</th></tr></thead><tbody></tbody></table>
+  </section>
+</div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { config: null, jobId: null, offset: 0, runJobId: null, metricsNext: 0, snapshots: [], mode: "live", charts: {} };
+const COLORS = ["#2f6fde", "#e07a1f", "#1a8f4c", "#9b51e0", "#c8372d", "#0f9aa5"];
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "–" : Number(v).toFixed(d);
+
+// ------------------------------------------------------------------ setup
+async function init() {
+  state.config = await api("/api/config");
+  const env = $("env");
+  env.textContent = state.config.environment;
+  env.classList.toggle("prod", state.config.environment === "production");
+  $("workers").innerHTML = state.config.workers.map((w) =>
+    `<label><input type="checkbox" value="${esc(w.name)}" ${["emotion", "attendance"].includes(w.name) ? "checked" : ""}> ${esc(w.name)} <span class="muted">${esc(w.function_key)}</span></label>`).join("");
+  $("copyTarget").value = state.config.copy_target || "";
+  $("templateCamera").value = state.config.template_camera || "";
+  makeCharts();
+  await Promise.all([refreshUploads(), refreshCorpora(), refreshCameras(), refreshJobs()]);
+  setInterval(tick, 2000);
+  setInterval(refreshJobs, 5000);
+}
+
+async function refreshUploads() {
+  const files = await api("/api/uploads");
+  $("uploadedVideo").innerHTML = files.map((f) => `<option>${esc(f)}</option>`).join("") || "<option value=''>(none uploaded)</option>";
+}
+
+async function refreshCorpora() {
+  const corpora = await api("/api/corpora");
+  $("corporaTable").querySelector("tbody").innerHTML = corpora.map((c) =>
+    `<tr><td>${esc(c.name)}</td><td>${c.frames ?? "?"}</td><td>${c.fps ?? "?"}</td><td class="mono">${esc(c.image_root || "(local)")}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">No corpora in ${esc(state.config.corpus_dir)}</td></tr>`;
+  const options = corpora.map((c) => `<option>${esc(c.name)}</option>`).join("");
+  $("runCorpus").innerHTML = options || "<option value=''>(no corpus)</option>";
+  $("camCorpus").innerHTML = "<option value=''>(none)</option>" + options;
+}
+
+async function refreshCameras() {
+  $("camError").textContent = "";
+  try {
+    const cameras = await api("/api/video-cameras");
+    $("camerasTable").querySelector("tbody").innerHTML = cameras.map((c) =>
+      `<tr><td>${esc(c.name)}<div class="muted">${esc(c.description || "")}</div></td><td class="mono">${esc(c.id)}</td>
+       <td><button data-use="${esc(c.id)}">Use</button> <button class="danger" data-remove="${esc(c.id)}">Remove</button></td></tr>`).join("")
+      || `<tr><td colspan="3" class="muted">No video cameras yet.</td></tr>`;
+  } catch (error) {
+    $("camerasTable").querySelector("tbody").innerHTML = "";
+    $("camError").textContent = `Cannot list video cameras: ${error.message}`;
+  }
+}
+
+// ------------------------------------------------------------------ actions
+async function startJob(action, params, errorEl) {
+  $(errorEl).textContent = "";
+  try {
+    const job = await post("/api/jobs", { action, params });
+    selectJob(job.id);
+    if (job.kind === "run") { state.runJobId = job.id; state.metricsNext = 0; state.snapshots = []; showMode("live"); }
+    await refreshJobs();
+    return job;
+  } catch (error) { $(errorEl).textContent = error.message; }
+}
+
+function testParams() {
+  return {
+    workers: [...$("workers").querySelectorAll("input:checked")].map((i) => i.value),
+    server_ip: $("serverIp").value.trim(),
+    scenario: $("scenario").value,
+    template_camera: $("templateCamera").value.trim(),
+    source: document.querySelector("input[name=source]:checked").value,
+    corpus: $("runCorpus").value,
+    set: $("overrides").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    no_guard: $("noGuard").checked,
+    keep_events: $("keepEvents").checked,
+  };
+}
+
+$("uploadBtn").onclick = () => {
+  const file = $("videoFile").files[0];
+  $("corpusError").textContent = "";
+  if (!file) { $("corpusError").textContent = "Choose a video file first"; return; }
+  const name = file.name.replace(/[^A-Za-z0-9 _.\-]/g, "_");
+  const xhr = new XMLHttpRequest();
+  const bar = $("uploadProgress");
+  bar.hidden = false; bar.value = 0;
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = (100 * e.loaded) / e.total; };
+  xhr.onload = async () => {
+    bar.hidden = true;
+    if (xhr.status !== 200) { $("corpusError").textContent = (JSON.parse(xhr.responseText || "{}").error) || "Upload failed"; return; }
+    await refreshUploads();
+    $("uploadedVideo").value = name;
+    if (!$("corpusName").value) $("corpusName").value = name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_.\-]/g, "-").toLowerCase();
+  };
+  xhr.onerror = () => { bar.hidden = true; $("corpusError").textContent = "Upload failed"; };
+  xhr.open("POST", `/api/videos?name=${encodeURIComponent(name)}`);
+  xhr.send(file);
+};
+
+$("corpusBtn").onclick = () => startJob("corpus", {
+  video: $("uploadedVideo").value, name: $("corpusName").value.trim(), fps: $("corpusFps").value,
+  max_seconds: $("corpusMax").value, image_root: $("imageRoot").value.trim(), copy_target: $("copyTarget").value.trim(),
+}, "corpusError");
+
+$("camAddBtn").onclick = () => startJob("video-camera-add", {
+  name: $("camName").value.trim(), like: $("camLike").value.trim(), zones_from: $("camZones").value.trim(), corpus: $("camCorpus").value,
+}, "camError");
+$("camRefreshBtn").onclick = refreshCameras;
+$("camerasTable").onclick = (e) => {
+  const use = e.target.dataset.use, remove = e.target.dataset.remove;
+  if (use) { $("templateCamera").value = use; }
+  if (remove && confirm("Delete this video camera and its zones?")) startJob("video-camera-remove", { camera_id: remove }, "camError");
+};
+
+$("checkBtn").onclick = () => startJob("check", testParams(), "runError");
+$("runBtn").onclick = () => startJob("run", testParams(), "runError");
+$("stopBtn").onclick = async () => {
+  if (!state.runJobId) return;
+  await post(`/api/jobs/${state.runJobId}/stop`, {});
+  $("stopBtn").disabled = true;
+};
+$("orphansBtn").onclick = () => startJob("cleanup-orphans", {}, "runError");
+$("orphansYesBtn").onclick = () => confirm("Remove every leftover synthetic camera and region?") && startJob("cleanup-orphans", { yes: true }, "runError");
+
+// ------------------------------------------------------------------ jobs & output
+async function refreshJobs() {
+  const jobs = await api("/api/jobs");
+  $("jobsTable").querySelector("tbody").innerHTML = jobs.slice(0, 12).map((j) => {
+    const status = j.running ? (j.stop_requested ? "stopping…" : "running") : (j.returncode === 0 ? "done" : `exit ${j.returncode}`);
+    const cls = j.running ? "warn-text" : (j.returncode === 0 ? "ok-text" : "bad-text");
+    return `<tr class="clickable" data-job="${esc(j.id)}"><td class="mono">${esc(j.id)}</td><td class="mono">${esc(j.argv.slice(0, 3).join(" "))}</td><td class="${cls}">${status}</td></tr>`;
+  }).join("");
+  const run = jobs.find((j) => j.kind === "run");
+  if (run && !state.runJobId) state.runJobId = run.id;
+  const active = jobs.find((j) => j.id === state.runJobId);
+  $("stopBtn").disabled = !(active && active.running && !active.stop_requested);
+  $("runBtn").disabled = !!jobs.find((j) => (j.kind === "run" || j.kind === "cleanup") && j.running);
+}
+$("jobsTable").onclick = (e) => { const row = e.target.closest("tr[data-job]"); if (row) selectJob(row.dataset.job); };
+
+function selectJob(id) {
+  state.jobId = id; state.offset = 0;
+  $("console").innerHTML = "";
+  $("jobTitle").textContent = id;
+}
+
+function colorize(text) {
+  return text.split("\n").map((line) => {
+    const e = esc(line);
+    if (/^\s+ok\s/.test(line)) return `<span class="ok">${e}</span>`;
+    if (/^\s+warn\s|WARNING/.test(line)) return `<span class="warn">${e}</span>`;
+    if (/^\s+FAIL\s|ERROR|Traceback|Error:/.test(line)) return `<span class="fail">${e}</span>`;
+    return e;
+  }).join("\n");
+}
+
+async function tick() {
+  if (state.jobId) {
+    try {
+      const job = await api(`/api/jobs/${state.jobId}?since=${state.offset}`);
+      if (job.output) {
+        const el = $("console");
+        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+        el.innerHTML += colorize(job.output);
+        if (atBottom) el.scrollTop = el.scrollHeight;
+      }
+      state.offset = job.offset;
+      if (!job.running && ["corpus", "video-camera"].includes(job.kind) && !job._refreshed) {
+        refreshCorpora(); refreshCameras(); refreshUploads();
+      }
+    } catch (error) { /* job list will show it */ }
+  }
+  if (state.runJobId && state.mode === "live") {
+    try {
+      const data = await api(`/api/jobs/${state.runJobId}/metrics?since=${state.metricsNext}`);
+      state.snapshots.push(...data.snapshots);
+      state.metricsNext = data.next;
+      if (state.snapshots.length) renderLive(data.run_id);
+    } catch (error) { /* run not started */ }
+  }
+}
+
+// ------------------------------------------------------------------ charts
+function makeCharts() {
+  const base = (stacked) => ({
+    type: "line", data: { labels: [], datasets: [] },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false, spanGaps: false,
+      interaction: { mode: "index", intersect: false },
+      scales: { x: { type: "linear", title: { display: true, text: "seconds" }, ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } },
+      elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.15 } },
+      plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } } },
+    },
+  });
+  for (const [key, id] of [["staleness", "cStaleness"], ["lag", "cLag"], ["excess", "cExcess"], ["load", "cLoad"]]) {
+    state.charts[key] = new Chart($(id), base());
+  }
+  state.charts.excess.options.scales.y.beginAtZero = false;
+  state.charts.load.options.scales.y1 = { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: "frames/s" } };
+}
+
+function setChart(chart, x, series) {
+  chart.data.datasets = series.map((s, i) => ({
+    label: s.label, data: x.map((xv, j) => ({ x: xv, y: s.values[j] ?? null })),
+    borderColor: s.color || COLORS[i % COLORS.length], backgroundColor: s.color || COLORS[i % COLORS.length],
+    borderDash: s.dash ? [6, 5] : [], stepped: !!s.stepped, yAxisID: s.axis || "y",
+  }));
+  chart.update("none");
+}
+
+function renderModel(model) {
+  setChart(state.charts.staleness, model.x, [...model.staleness, model.limit && { label: "keep-up limit", values: model.x.map(() => model.limit), color: "#c8372d", dash: true }].filter(Boolean));
+  setChart(state.charts.lag, model.x, model.lag);
+  setChart(state.charts.excess, model.x, [...model.excess, model.guard && { label: "guard limit", values: model.x.map(() => model.guard), color: "#c8372d", dash: true }].filter(Boolean));
+  setChart(state.charts.load, model.x, [
+    { label: "synthetic cameras", values: model.cameras, stepped: true },
+    { label: "publish rate", values: model.rate, axis: "y1", color: "#1a8f4c" },
+  ]);
+  $("verdicts").querySelector("tbody").innerHTML = model.verdicts.map((v) =>
+    `<tr><td>${esc(v.index)}</td><td>${esc(v.stage)}</td><td>${esc(v.worker)}</td><td class="${v.kept ? "ok-text" : "bad-text"}">${v.kept ? "kept up" : esc(v.reason || "fell behind")}</td><td>${num(v.p95, 2)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted">Verdicts appear as each stage ends.</td></tr>`;
+  $("tiles").innerHTML = model.tiles.map(([k, v]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+}
+
+const pick = (metrics, name, match = {}) => (metrics[name] || []).filter((s) => Object.entries(match).every(([k, v]) => s.labels[k] === v));
+const one = (metrics, name, match) => { const s = pick(metrics, name, match)[0]; return s ? s.value : null; };
+
+function renderLive(runId) {
+  const snaps = state.snapshots;
+  const t0 = snaps[0].t;
+  const last = snaps[snaps.length - 1].metrics;
+  const workers = [...new Set(snaps.flatMap((s) => pick(s.metrics, "loadgen_worker_up").map((m) => m.labels.worker)))];
+  const x = snaps.map((s) => Math.round(s.t - t0));
+  const perWorker = (name, extra = {}) => workers.map((w) => ({ label: w, values: snaps.map((s) => one(s.metrics, name, { worker: w, ...extra })) }));
+  const rate = snaps.map((s, i) => {
+    if (!i) return null;
+    const a = one(snaps[i - 1].metrics, "loadgen_frames_acked_total"), b = one(s.metrics, "loadgen_frames_acked_total");
+    return a === null || b === null ? null : Math.max(0, (b - a) / (s.t - snaps[i - 1].t));
+  });
+  const info = pick(last, "loadgen_run_info")[0];
+  const phase = pick(last, "loadgen_phase").find((m) => m.value === 1);
+  const stage = pick(last, "loadgen_stage_info")[0];
+  const errors = one(last, "loadgen_publish_errors_total");
+  const offsets = pick(last, "loadgen_clock_offset_seconds").map((m) => `${m.labels.worker} ${m.value >= 0 ? "+" : ""}${m.value.toFixed(1)}s`).join(", ");
+  $("viewTitle").textContent = `Run ${runId || "(starting)"}${info ? ` · ${info.labels.scenario} (${info.labels.scenario_type}, ${info.labels.environment})` : ""}`;
+  renderModel({
+    x, staleness: perWorker("loadgen_synthetic_staleness_seconds", { quantile: "0.95" }),
+    lag: perWorker("loadgen_consumer_lag"), excess: perWorker("loadgen_real_staleness_excess_seconds"),
+    cameras: snaps.map((s) => one(s.metrics, "loadgen_active_cameras")), rate,
+    limit: one(last, "loadgen_threshold_seconds", { kind: "max_staleness" }), guard: one(last, "loadgen_threshold_seconds", { kind: "guard" }),
+    verdicts: pick(last, "loadgen_stage_kept_up").map((m) => ({
+      index: m.labels.stage_index, stage: m.labels.stage, worker: m.labels.worker, kept: m.value === 1,
+      p95: one(last, "loadgen_stage_staleness_p95_seconds", { worker: m.labels.worker, stage: m.labels.stage, stage_index: m.labels.stage_index }),
+    })).sort((a, b) => a.index.localeCompare(b.index) || a.worker.localeCompare(b.worker)),
+    tiles: [["Phase", phase ? phase.labels.phase : "–"], ["Stage", stage ? stage.labels.stage : "–"],
+            ["Synthetic cameras", num(one(last, "loadgen_active_cameras"), 0)], ["Publish rate", `${num(rate[rate.length - 1])} /s`],
+            ["Publish errors", num(errors, 0)], ["Clock offset", offsets || "–"]],
+  });
+}
+
+// ------------------------------------------------------------------ history
+function showMode(mode) {
+  state.mode = mode;
+  $("tabLive").classList.toggle("active", mode === "live");
+  $("tabHistory").classList.toggle("active", mode === "history");
+  $("historyCard").hidden = mode !== "history";
+  if (mode === "history") refreshRuns();
+  else if (state.snapshots.length) renderLive();
+}
+$("tabLive").onclick = () => showMode("live");
+$("tabHistory").onclick = () => showMode("history");
+
+async function refreshRuns() {
+  const runs = await api("/api/runs");
+  $("runsTable").querySelector("tbody").innerHTML = runs.map((r) => {
+    const result = r.error ? `<span class="bad-text">error</span>` : r.aborted ? `<span class="warn-text">aborted</span>`
+      : r.throughput ? Object.entries(r.throughput).map(([w, t]) => `${esc(w)} max ${t.max_sustained_cameras ?? "–"}`).join(", ") : "done";
+    return `<tr class="clickable" data-run="${esc(r.run_id)}"><td class="mono">${esc(r.run_id)}</td><td>${esc(r.scenario)} <span class="muted">${esc(r.type)}</span></td>
+      <td>${esc((r.workers || []).join(", "))}</td><td>${esc(r.source || "live")}</td><td>${r.stages}</td><td>${result}</td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted">No runs in ${esc(state.config.results_dir)}</td></tr>`;
+}
+$("runsTable").onclick = async (e) => {
+  const row = e.target.closest("tr[data-run]");
+  if (!row) return;
+  const { summary, timeseries } = await api(`/api/runs/${row.dataset.run}`);
+  const scenario = summary.scenario || {};
+  const workers = scenario.workers || [];
+  const val = (v) => (v === undefined || v === "" || v === "-" || v === "None") ? null : Number(v);
+  const x = timeseries.map((r) => val(r.elapsed_s));
+  const perWorker = (suffix) => workers.map((w) => ({ label: w, values: timeseries.map((r) => val(r[`${w}_${suffix}`])) }));
+  const verdicts = [];
+  (summary.stages || []).forEach((stage, i) => Object.entries(stage.workers || {}).forEach(([w, entry]) => {
+    if (entry.verdict) verdicts.push({ index: String(i + 1).padStart(2, "0"), stage: stage.name, worker: w, kept: entry.verdict.kept_up, reason: entry.verdict.reason, p95: entry.verdict.staleness_p95 });
+  }));
+  const throughput = Object.entries(summary.throughput || {}).map(([w, t]) => `${w} ${t.max_sustained_cameras ?? "–"}`).join(", ");
+  $("viewTitle").textContent = `Run ${summary.run_id} · ${scenario.name} (${scenario.type}, ${summary.environment})${summary.error ? " · error: " + summary.error : ""}${summary.aborted ? " · aborted: " + summary.aborted : ""}`;
+  renderModel({
+    x, staleness: perWorker("staleness_p95"), lag: perWorker("lag"), excess: perWorker("real_excess"),
+    cameras: timeseries.map((r) => val(r.active_cameras)), rate: timeseries.map((r) => val(r.publish_rate)),
+    limit: (scenario.saturation || {}).max_staleness_s, guard: (scenario.guard || {}).max_real_staleness_increase_s, verdicts,
+    tiles: [["Template", summary.template_camera_id || "–"], ["Source", (scenario.source || {}).mode || "live"],
+            ["Stages", String((summary.stages || []).length)], ["Frames acked", String((summary.producer || {}).acked ?? "–")],
+            ["Max sustained", throughput || "–"], ["Teardown", (summary.teardown || {}).errors?.length ? "errors" : "clean"]],
+  });
+};
+
+init().catch((error) => { document.body.insertAdjacentHTML("afterbegin", `<p class="error" style="padding:12px">${esc(error.message)}</p>`); });
+</script>
+</body>
+</html>

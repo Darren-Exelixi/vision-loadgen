@@ -100,6 +100,9 @@ class AuthConfig(BaseModel):
 class FramesConfig(BaseModel):
     shared_mount_path: str = "/data/frames"
     corpus_dir: str = "/data/frames/loadgen_corpus"
+    # Where the workers read corpus images whose manifest paths are relative; empty = the
+    # corpus's own corpus.json, else the corpus folder itself.
+    corpus_image_root: str = ""
     timezone: str = "UTC"
     frame_date_format: str = "%Y-%m-%d"
     frame_hour_format: str = "%H"
@@ -259,6 +262,8 @@ class SourceConfig(BaseModel):
     mode: Literal["live", "corpus"] = "live"
     source_camera_ids: list[str] = Field(default_factory=list)
     corpus_name: str = ""
+    # Overrides frames.corpus_image_root for this scenario.
+    image_root: str = ""
     first_frame_timeout_s: float = 30.0
 
     @model_validator(mode="after")

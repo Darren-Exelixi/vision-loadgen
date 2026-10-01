@@ -192,6 +192,25 @@ Per sample (default every 5 s), for each worker:
 Outputs in `results/<run_id>/`: `registry.json`, `timeseries.csv`, `summary.json`, plus the
 attendance snapshot.
 
+### Video corpus
+
+Without a streaming camera, a recorded video stands in. `corpus from-video` samples it with
+OpenCV into JPEGs plus a manifest of paths relative to `image_root` (recorded in `corpus.json`),
+the folder the workers read them from once copied there (default `/app/events/loadgen_corpus/<name>`,
+the shared events bind mount; the frames tmpfs deletes old files). `CorpusSource` joins the paths
+to that root and checks the files only when this machine can see it. The frames still travel the
+production route from Kafka on: pointer messages on `exelixi.frames.raw`, consumed by each
+worker's `KafkaFramePipeline`. The modules' video-upload API was not usable: it decodes uploads
+inside the worker and never publishes to Kafka. `video-camera add` registers the video's
+perspective as an inactive `loadgen-video-*` camera cloned from an existing one (region,
+timezone; stream blanked), used as the template so each run's synthetic cameras are cloned from
+it; it is never enabled itself and survives `cleanup --orphans`.
+
+`vision-loadgen ui` is a stdlib-only local page over the same CLI: it starts allowlisted commands
+as child processes (stopping a run through `LOADGEN_STOP_FILE`, since signals cannot reach a
+console-less child on Windows), polls the run's metrics endpoint for live charts, and reads past
+runs from the results folder.
+
 ### Observability (Prometheus / Grafana)
 
 With `LOADGEN_METRICS_PORT` (or `--metrics-port`) set, `run` also serves `/metrics` in the

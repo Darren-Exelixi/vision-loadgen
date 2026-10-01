@@ -21,7 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 # Standalone image: YAML --config files and time zone data on slim Python images.
 standalone = ["PyYAML>=6.0", "tzdata>=2024.1"]
-dev = ["PyYAML>=6.0", "pytest>=8.0"]
+# `corpus from-video` only; worker images already have OpenCV.
+video = ["opencv-python-headless>=4.8"]
+dev = ["PyYAML>=6.0", "pytest>=8.0", "opencv-python-headless>=4.8"]
 
 [project.scripts]
 vision-loadgen = "vision_loadgen.cli:main"
@@ -29,3 +31,6 @@ vision-loadgen = "vision_loadgen.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["vision_loadgen*"]
+
+[tool.setuptools.package-data]
+vision_loadgen = ["ui/static/*"]

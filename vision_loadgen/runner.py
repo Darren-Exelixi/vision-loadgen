@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import secrets
 import signal
@@ -232,7 +233,12 @@ class Runner:
     def _build_source(self, synthetic_ids: set[str], template_id: str) -> FrameSource:
         cfg = self.scenario.source
         if cfg.mode == "corpus":
-            return CorpusSource(self.app.frames, cfg.corpus_name)
+            source = CorpusSource(self.app.frames, cfg.corpus_name, cfg.image_root or self.app.frames.corpus_image_root)
+            if source.fps and abs(source.fps - self.scenario.fps_per_camera) > 0.01:
+                log.warning("Corpus was sampled at %.2f fps but cameras publish at %.2f fps; playback runs %.1fx "
+                            "real time", source.fps, self.scenario.fps_per_camera,
+                            self.scenario.fps_per_camera / source.fps)
+            return source
         return LiveTapSource(self.app.kafka, cfg.source_camera_ids or [template_id], synthetic_ids)
 
     def _calibrated_guard(self, sampler: Sampler) -> RealCameraGuard:
@@ -403,3 +409,16 @@ class Runner:
 
         signal.signal(signal.SIGINT, _handler)
         signal.signal(signal.SIGTERM, _handler)
+        if hasattr(signal, "SIGBREAK"):  # Windows Ctrl+Break
+            signal.signal(signal.SIGBREAK, _handler)
+        # Signals cannot reach a child without a console on Windows, so the UI asks a run to stop
+        # by creating this file instead.
+        stop_file = os.environ.get("LOADGEN_STOP_FILE")
+        if stop_file:
+            def _watch() -> None:
+                while not self.stop_event.wait(0.5):
+                    if os.path.exists(stop_file):
+                        log.warning("Stop requested (%s); stopping and tearing down", stop_file)
+                        self.stop_event.set()
+
+            threading.Thread(target=_watch, name="loadgen-stop-file", daemon=True).start()

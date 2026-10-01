@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import queue
 import shutil
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional, Protocol
 
 from vision_loadgen.config import FramesConfig, KafkaConfig
@@ -17,6 +18,7 @@ from vision_loadgen.kafka_io import TopicTap
 log = logging.getLogger(__name__)
 
 MANIFEST_NAME = "manifest.jsonl"
+HEADER_NAME = "corpus.json"
 
 
 class FrameSource(Protocol):
@@ -77,23 +79,64 @@ class LiveTapSource:
         self._first_frame.set()
 
 
+def _is_absolute(path: str) -> bool:
+    """Absolute on the workers (POSIX) or on this machine."""
+    return path.startswith("/") or PureWindowsPath(path).is_absolute()
+
+
+def _join(root: str, name: str) -> str:
+    return posixpath.join(root, name) if root.startswith("/") else str(Path(root) / name)
+
+
+def read_corpus_header(directory: Path) -> dict:
+    path = directory / HEADER_NAME
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 class CorpusSource:
-    """Loops a captured corpus; each synthetic camera starts at a different offset."""
+    """Loops a corpus; each synthetic camera starts at a different offset.
+
+    Manifest paths are absolute (`capture`) or relative to `image_root`: the folder the workers
+    read the corpus from, which need not exist here (`corpus from-video` corpora copied to the
+    server). `image_root` defaults to `corpus.json`'s, else the local corpus folder.
+    """
 
     passthrough_dates = False
 
-    def __init__(self, frames: FramesConfig, corpus_name: str) -> None:
-        manifest = Path(frames.corpus_dir) / corpus_name / MANIFEST_NAME
+    def __init__(self, frames: FramesConfig, corpus_name: str, image_root: str = "") -> None:
+        directory = Path(frames.corpus_dir) / corpus_name
+        manifest = directory / MANIFEST_NAME
         if not manifest.is_file():
             raise FileNotFoundError(f"Corpus manifest not found: {manifest}")
+        self.header = read_corpus_header(directory)
+        self.fps: Optional[float] = self.header.get("fps")
+        self.image_root = image_root or self.header.get("image_root") or str(directory)
         with manifest.open("r", encoding="utf-8") as handle:
-            self._entries = [json.loads(line) for line in handle if line.strip()]
-        if not self._entries:
+            entries = [json.loads(line) for line in handle if line.strip()]
+        if not entries:
             raise ValueError(f"Corpus '{corpus_name}' is empty")
-        missing = [entry["image_path"] for entry in self._entries[:20] if not Path(entry["image_path"]).is_file()]
-        if missing:
-            raise FileNotFoundError(f"Corpus images missing, e.g. {missing[0]}")
+        for entry in entries:
+            if not _is_absolute(entry["image_path"]):
+                entry["image_path"] = _join(self.image_root, entry["image_path"])
+        self._entries = entries
+        # Server-side corpora cannot be checked from here; the workers' readability shows up as
+        # synthetic staleness (never updating when they cannot read the files).
+        explicit_root = image_root or self.header.get("image_root")
+        self.verified = not explicit_root or Path(self.image_root).is_dir()
+        if self.verified:
+            missing = [entry["image_path"] for entry in entries[:20] if not Path(entry["image_path"]).is_file()]
+            if missing:
+                raise FileNotFoundError(f"Corpus images missing, e.g. {missing[0]}")
+        else:
+            log.info("Corpus images are read by the workers from %s, which this machine cannot see; "
+                     "they are not checked here", self.image_root)
         self._cursors: dict[int, int] = {}
+
+    @property
+    def frames(self) -> int:
+        return len(self._entries)
 
     def start(self) -> None:
         pass

@@ -152,6 +152,7 @@ def base_config(lookup: Lookup, shared: Lookup) -> dict[str, Any]:
         "frames": {
             "shared_mount_path": frames_mount,
             "corpus_dir": lookup("LOADGEN_CORPUS_DIR") or os.path.join(frames_mount, "loadgen_corpus"),
+            "corpus_image_root": lookup("LOADGEN_CORPUS_IMAGE_ROOT") or "",
             "timezone": lookup("TIMEZONE") or "UTC",
         },
         "registration": {

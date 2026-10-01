@@ -90,6 +90,64 @@ the broker's name to the hosts file). Without `EVENTS_DIR` locally, event rows a
 their files stay on the server (the report says so). There is no `nvidia-smi` estimate from here,
 so set `gpu_free_vram_mb` with `--config` to cap stages at GPU capacity.
 
+## Benchmark from a video (no live cameras)
+
+When no camera is streaming, replay a recorded video instead. The frames still go through Kafka:
+every synthetic camera's frames are published to `exelixi.frames.raw` and the workers consume
+them with their normal `KafkaFramePipeline`, reading each JPEG from the message's `image_path`.
+Only the frames router's RTSP capture is left out, as in live mode. (The modules' video-upload
+API cannot be used: it decodes the file inside the worker and never touches Kafka.)
+
+```powershell
+pip install -e ".[standalone,video]"          # OpenCV, only for `corpus from-video`
+# 1. Video -> JPEGs + manifest in LOADGEN_CORPUS_DIR (./corpora), sampled at the run's fps
+.venv\Scripts\python -m vision_loadgen corpus from-video --video lobby.mp4 --name lobby --fps 5
+# 2. Copy it to where the workers read it (default /app/events/loadgen_corpus/<name>, i.e. the
+#    modules host's events folder); the command above prints the scp line
+scp -r corpora\lobby admin1@10.10.10.22:<compose folder>/events/loadgen_corpus/
+# 3. Register the video's perspective as a camera (once), cloned from an existing camera
+.venv\Scripts\python -m vision_loadgen video-camera add --name "Lobby video" --like <camera id> --corpus lobby
+# 4. Check and run with it as the template
+.venv\Scripts\python -m vision_loadgen check --worker emotion --worker attendance --server-ip 10.10.10.22 `
+  --template-camera <video camera id> --set source.mode=corpus --set source.corpus_name=lobby
+.venv\Scripts\python -m vision_loadgen run   --worker emotion --worker attendance --server-ip 10.10.10.22 `
+  --template-camera <video camera id> --set source.mode=corpus --set source.corpus_name=lobby
+```
+
+- **Corpus:** `corpus.json` records the frame rate and `image_root`, the folder the workers read
+  the JPEGs from. Manifest paths are relative to it. Override it with `--image-root`,
+  `LOADGEN_CORPUS_IMAGE_ROOT` or `--set source.image_root=...`. The events folder is used because
+  the frames mount is a tmpfs whose old files are deleted.
+  - The workers must see the same folder. Check with
+    `docker inspect <container> --format '{{json .Mounts}}'`.
+  - From your machine the files can't be checked. A worker that can't read them shows no
+    synthetic staleness, and the stage verdict says so.
+- **Frame rate:** keep the corpus fps equal to `fps_per_camera` (default 5) so the video plays in
+  real time. Each synthetic camera starts at a different point and loops.
+- **Video camera:** a clone of `--like`'s row named `loadgen-video-...`, with its stream blanked
+  and `is_active` off, so nothing tries to open it.
+  - It isn't enabled in any module. Each run clones it into synthetic cameras and removes those
+    afterwards.
+  - `--zones-from <camera>` copies per-camera rows such as emotion zones.
+  - `video-camera list` / `video-camera remove <id>` manage it. `cleanup --orphans` leaves it alone.
+- **Attendance:** recognition load is realistic only if the video shows enrolled faces. Otherwise
+  it measures detection alone.
+
+## Web UI
+
+`python -m vision_loadgen ui` serves a small page on http://127.0.0.1:8765 that runs everything
+above: upload a video and build a corpus, add or remove video cameras, check, run and stop
+(teardown still runs), and clean up leftovers.
+
+- **Live view:** charts the run as it goes (staleness p95 against the keep-up limit, consumer lag,
+  real-camera excess against the guard, cameras and publish rate) plus the stage verdicts.
+  Runs always serve metrics on 9464 (or the next free port), so Grafana sees them too.
+- **History:** shows any finished run from the results folder.
+- **Command output:** each command's output streams into the page. Logs are kept in
+  `<results>/ui-jobs/`.
+- **Access:** the page only listens on localhost and accepts no arbitrary commands. Production
+  runs need `ui --allow-production`.
+
 ## Commands
 
 ```bash
@@ -100,6 +158,9 @@ python -m vision_loadgen capture --name soak-baseline --duration 600 --camera <i
 python -m vision_loadgen run     --scenario soak --set source.mode=corpus --set source.corpus_name=soak-baseline
 python -m vision_loadgen cleanup --run-id 20260929-101500-ab12
 python -m vision_loadgen cleanup --orphans [--yes]
+python -m vision_loadgen corpus from-video --video clip.mp4 --name lobby [--fps 5] [--image-root /app/...]
+python -m vision_loadgen video-camera add --name "Lobby video" --like <camera id> | list | remove <id>
+python -m vision_loadgen ui [--port 8765]
 ```
 
 `vision-loadgen` is the same CLI when installed with pip.
