@@ -1,6 +1,0 @@
-[
-  {
-    "targets": ["host.docker.internal:9464"],
-    "labels": {"source": "this-machine"}
-  }
-]
