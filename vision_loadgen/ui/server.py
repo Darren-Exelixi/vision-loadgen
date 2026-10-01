@@ -1,8 +1,8 @@
 """`vision-loadgen ui`: a small local web page that runs the CLI and shows its metrics.
 
 Stdlib only. Every action runs `python -m vision_loadgen ...` as a child process with validated
-arguments (no shell); its output goes to a log file the page polls. Runs always serve Prometheus
-metrics on a free port, which this server polls and keeps per job for the live charts. History
+arguments (no shell); its output goes to a log file the page polls. Runs always serve their live
+metrics endpoint on a free port, which this server polls and keeps per job for the charts. History
 comes from the results folder (summary.json, timeseries.csv).
 """
 
@@ -27,7 +27,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from vision_loadgen.config import AppConfig, ConfigError
-from vision_loadgen.exporter import METRICS
+from vision_loadgen.exporter import METRICS, parse_exposition
 from vision_loadgen.sources import HEADER_NAME, MANIFEST_NAME, read_corpus_header
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,10 @@ RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 RUN_STARTED = re.compile(r"Run (\d{8}-\d{6}-[0-9a-f]{4}):")
 FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,120}\.(mp4|avi|mov|mkv|webm|m4v)$", re.IGNORECASE)
 SCENARIOS = ("latency", "throughput", "soak")
+SIZINGS = ("fixed", "per_stage")
+CONTAINER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$")
+SSH_TARGET = re.compile(r"^[A-Za-z0-9_.\-]+@[A-Za-z0-9.\-]+$")
+DOCKER_WORD = re.compile(r"^[A-Za-z0-9_./\-]+$")
 EXCLUSIVE = {"run", "cleanup"}  # change what is registered; one at a time
 
 
@@ -104,6 +108,11 @@ def scenario_args(app: AppConfig, params: dict) -> list[str]:
     if template:
         argv += ["--template-camera", template]
     overrides = list(params.get("set") or [])
+    sizing = params.get("sizing")
+    if sizing not in (None, ""):
+        if sizing not in SIZINGS:
+            raise BadRequest("sizing must be fixed or per_stage")
+        overrides.insert(0, f"sizing={sizing}")  # an explicit --set sizing=... line still wins
     if params.get("source") == "corpus":
         overrides += [f"source.mode=corpus", f"source.corpus_name={_str(params, 'corpus', CORPUS_NAME)}"]
     elif params.get("source") not in (None, "", "live"):
@@ -165,37 +174,22 @@ def build_command(app: AppConfig, action: str, params: dict, allow_production: b
 
 # ---------------------------------------------------------------------------- metrics
 
-_LINE = re.compile(r"^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{(.*)\})?\s+(\S+)$")
-_LABEL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\]|\\.)*)"')
-
-
 def parse_prometheus(text: str) -> dict[str, list[dict[str, Any]]]:
     """{metric: [{"labels": {...}, "value": float}]} for the loadgen metrics in an exposition."""
-    metrics: dict[str, list[dict[str, Any]]] = {}
-    for line in text.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        match = _LINE.match(line)
-        if not match or match.group(1) not in METRICS:
-            continue
-        labels = {key: value.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
-                  for key, value in _LABEL.findall(match.group(2) or "")}
-        try:
-            value = float(match.group(3))
-        except ValueError:
-            continue
-        metrics.setdefault(match.group(1), []).append({"labels": labels, "value": value})
-    return metrics
+    return parse_exposition(text, METRICS)
 
 
 def free_port(start: int = METRICS_PORT, attempts: int = 50) -> int:
+    # Probe loopback and the wildcard: on Windows a wildcard bind succeeds even while another
+    # process holds the port on 127.0.0.1, where runs listen by default.
     for port in range(start, start + attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            try:
-                probe.bind(("0.0.0.0", port))
-                return port
-            except OSError:
-                continue
+        try:
+            for addr in ("127.0.0.1", "0.0.0.0"):
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    probe.bind((addr, port))
+            return port
+        except OSError:
+            continue
     raise RuntimeError(f"No free port in {start}-{start + attempts - 1} for run metrics")
 
 
@@ -300,6 +294,14 @@ class JobManager:
         job.ended_at = time.time()
         self.output(job, 0)
 
+    @staticmethod
+    def _served_run(metrics: dict[str, list[dict[str, Any]]]) -> str:
+        for series in metrics.values():
+            for item in series:
+                if item["labels"].get("run_id"):
+                    return item["labels"]["run_id"]
+        return ""
+
     def _poll_metrics(self, job: Job) -> None:
         url = f"http://127.0.0.1:{job.metrics_port}/metrics"
         while job.ended_at is None or time.time() - job.ended_at < 5:
@@ -307,16 +309,138 @@ class JobManager:
                 with urllib.request.urlopen(url, timeout=2) as response:
                     text = response.read().decode("utf-8", errors="replace")
                 metrics = parse_prometheus(text)
-                if metrics:
+                if not job.run_id:
+                    self.output(job, job.log_path.stat().st_size)  # reads the run id from the log
+                # Only the run this job started (its log names it): anything else on the port is
+                # another process.
+                if metrics and job.run_id and self._served_run(metrics) == job.run_id:
                     with job.lock:
                         job.snapshots.append({"t": time.time(), "metrics": metrics})
                         del job.snapshots[:-MAX_SNAPSHOTS]
-                    info = metrics.get("loadgen_run_info")
-                    if info and not job.run_id:
-                        job.run_id = info[0]["labels"].get("run_id", "")
             except Exception:
                 pass  # not serving yet, or already gone
             time.sleep(POLL_S)
+
+
+# ---------------------------------------------------------------------------- worker logs
+
+@dataclass
+class LogFollow:
+    worker: str
+    argv: list[str]
+    log_path: Path
+    process: subprocess.Popen
+    started_at: float
+    last_read: float
+    ended_at: Optional[float] = None
+    returncode: Optional[int] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"worker": self.worker, "argv": self.argv, "started_at": self.started_at, "running": self.ended_at is None,
+                "returncode": self.returncode}
+
+
+class WorkerLogs:
+    """Follows worker containers' `docker logs` (over ssh to the Docker host) into files the page polls.
+
+    A follow stops when nobody has read it for IDLE_STOP_S, so a closed tab does not leave ssh
+    sessions behind, and when its file passes MAX_FOLLOW_BYTES.
+    """
+
+    IDLE_STOP_S = 120.0
+    MAX_FOLLOW_BYTES = 200 * 1024 ** 2
+
+    def __init__(self, app: AppConfig, log_dir: Path) -> None:
+        self.app = app
+        self.log_dir = log_dir
+        self.follows: dict[str, LogFollow] = {}
+        self._lock = threading.Lock()
+        threading.Thread(target=self._reap, name="worker-logs-reaper", daemon=True).start()
+
+    def targets(self) -> list[dict[str, Any]]:
+        cfg = self.app.worker_logs
+        return [{"worker": name, "container": worker.container, "host": cfg.ssh_target or "this machine",
+                 "following": name in self.follows and self.follows[name].ended_at is None}
+                for name, worker in self.app.workers.items() if worker.container]
+
+    def command(self, worker: str) -> list[str]:
+        cfg = self.app.worker_logs
+        container = self.app.workers[worker].container if worker in self.app.workers else ""
+        if not container:
+            raise BadRequest(f"No container configured for worker {worker!r} (set workers.{worker}.container)")
+        if not CONTAINER.match(container):
+            raise BadRequest(f"Invalid container name {container!r}")
+        docker = cfg.docker_command.split()
+        if not docker or not all(DOCKER_WORD.match(word) for word in docker):
+            raise BadRequest(f"Invalid worker_logs.docker_command {cfg.docker_command!r}")
+        remote = [*docker, "logs", "--follow", "--timestamps", "--tail", str(cfg.tail), container]
+        if not cfg.ssh_target:
+            return remote
+        if not SSH_TARGET.match(cfg.ssh_target):
+            raise BadRequest(f"Invalid worker_logs.ssh_target {cfg.ssh_target!r} (expected user@host)")
+        # BatchMode: fail at once without key login instead of waiting on a password prompt nobody sees.
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+                cfg.ssh_target, *remote]
+
+    def start(self, worker: str) -> LogFollow:
+        argv = self.command(worker)
+        with self._lock:
+            current = self.follows.get(worker)
+            if current is not None and current.ended_at is None:
+                current.last_read = time.time()
+                return current
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = self.log_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{worker}.log"
+            handle = log_path.open("wb")
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            try:
+                process = subprocess.Popen(argv, stdout=handle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                           creationflags=flags, start_new_session=os.name != "nt")
+            except OSError as exc:
+                raise BadRequest(f"Cannot start {argv[0]}: {exc}")
+            finally:
+                handle.close()
+            follow = LogFollow(worker, argv, log_path, process, time.time(), time.time())
+            self.follows[worker] = follow
+        threading.Thread(target=self._watch, args=(follow,), name=f"logs-{worker}", daemon=True).start()
+        log.info("Following %s logs: %s", worker, " ".join(argv))
+        return follow
+
+    def read(self, worker: str, since: int) -> dict[str, Any]:
+        follow = self.follows.get(worker)
+        if follow is None:
+            raise KeyError(worker)
+        follow.last_read = time.time()
+        with follow.log_path.open("rb") as handle:
+            handle.seek(max(0, since))
+            data = handle.read(1_000_000)
+        return {**follow.as_dict(), "output": data.decode("utf-8", errors="replace"), "offset": since + len(data)}
+
+    def stop(self, worker: str) -> None:
+        follow = self.follows.get(worker)
+        if follow is not None and follow.ended_at is None:
+            follow.process.terminate()
+
+    def stop_all(self) -> None:
+        for worker in list(self.follows):
+            self.stop(worker)
+
+    def _watch(self, follow: LogFollow) -> None:
+        follow.returncode = follow.process.wait()
+        follow.ended_at = time.time()
+
+    def _reap(self) -> None:
+        while True:
+            time.sleep(10)
+            for follow in list(self.follows.values()):
+                if follow.ended_at is not None:
+                    continue
+                if time.time() - follow.last_read > self.IDLE_STOP_S:
+                    log.info("Nobody is reading %s logs; stopping the follow", follow.worker)
+                    follow.process.terminate()
+                elif follow.log_path.stat().st_size > self.MAX_FOLLOW_BYTES:
+                    log.warning("%s log follow passed %d MB; stopping it", follow.worker, self.MAX_FOLLOW_BYTES >> 20)
+                    follow.process.terminate()
 
 
 # ---------------------------------------------------------------------------- history
@@ -383,6 +507,7 @@ class UiServer:
         if env_file is not None and base_argv is None:
             argv += ["--env-file", env_file]
         self.jobs = JobManager(self.results_dir / "ui-jobs", argv, env)
+        self.worker_logs = WorkerLogs(app, self.results_dir / "ui-jobs" / "worker-logs")
 
     def config(self) -> dict[str, Any]:
         return {
@@ -395,6 +520,7 @@ class UiServer:
             "corpus_image_root": self.app.frames.corpus_image_root,
             "copy_target": os.environ.get("LOADGEN_CORPUS_COPY_TARGET", ""),
             "template_camera": self.app.registration.template_camera_id,
+            "worker_logs_host": self.app.worker_logs.ssh_target or "this machine",
         }
 
     def video_cameras(self) -> list[dict[str, Any]]:
@@ -494,6 +620,10 @@ class UiServer:
                             snapshots = job.snapshots[since:]
                             total = len(job.snapshots)
                         return self._send(200, {"snapshots": snapshots, "next": total, "run_id": job.run_id})
+                    if route == ["worker-logs"]:
+                        return self._send(200, server.worker_logs.targets())
+                    if len(route) == 2 and route[0] == "worker-logs":
+                        return self._send(200, server.worker_logs.read(route[1], int(query.get("since", ["0"])[0])))
                     return self._send(404, {"error": "not found"})
                 except KeyError as exc:
                     return self._send(404, {"error": f"not found: {exc}"})
@@ -523,6 +653,11 @@ class UiServer:
                         job = server.jobs.get(route[1])
                         (server.jobs.stop if route[2] == "stop" else server.jobs.kill)(job)
                         return self._send(200, job.as_dict())
+                    if len(route) == 3 and route[0] == "worker-logs" and route[2] in ("start", "stop"):
+                        if route[2] == "start":
+                            return self._send(200, server.worker_logs.start(route[1]).as_dict())
+                        server.worker_logs.stop(route[1])
+                        return self._send(200, {"worker": route[1], "stopping": True})
                     return self._send(404, {"error": "not found"})
                 except KeyError as exc:
                     return self._send(404, {"error": f"not found: {exc}"})
@@ -555,6 +690,7 @@ def serve(app: AppConfig, host: str = "127.0.0.1", port: int = 8765, allow_produ
     except KeyboardInterrupt:
         pass
     finally:
+        ui.worker_logs.stop_all()
         running = [job for job in ui.jobs.jobs.values() if job.ended_at is None]
         for job in running:
             print(f"Stopping job {job.id} ({job.kind}); waiting for its teardown...", flush=True)

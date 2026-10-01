@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from vision_loadgen import db
-from vision_loadgen.config import AppConfig, ConfigError, load_scenario
+from vision_loadgen.config import AppConfig, ConfigError, WorkerMetricsConfig, load_scenario
 from vision_loadgen.environment import DEFAULT_WORKER_SETTINGS, build_app_config, load_env_file
 from vision_loadgen.kafka_io import LagReader
+from vision_loadgen.metrics import stage_buckets, stage_quantiles
 from vision_loadgen.registrar import Registrar, find_orphans, registry_for_orphan
 from vision_loadgen.registry import REGISTRY_NAME, Registry
 from vision_loadgen.runner import RunOptions, Runner, check_gates, plan_capacities, template_camera_id
@@ -174,6 +175,27 @@ def _report_clock(name: str, client: WorkerClient, ok, warn) -> None:
     (warn if abs(client.clock.seconds) > 2 else ok)(message)
 
 
+def _report_stage_times(name: str, client: WorkerClient, cfg: WorkerMetricsConfig, ok, warn) -> None:
+    """Stage times since the worker started, from its own metrics: a CPU fallback shows here first."""
+    if not cfg.path or not cfg.stage_histogram:
+        return
+    try:
+        stages = stage_quantiles(stage_buckets(client.metrics_text(cfg.path), cfg.stage_histogram))
+    except Exception as exc:
+        warn(f"{name}: worker metrics unavailable ({exc}); stage times will be missing from the run")
+        return
+    if not stages:
+        ok(f"{name}: worker metrics reachable (no frames processed since it started)")
+        return
+    ok(f"{name}: stage p50 since the worker started: "
+       + ", ".join(f"{stage} {values['0.5'] * 1000:.0f} ms" for stage, values in sorted(stages.items())))
+    for stage, limit in cfg.gpu_stage_limits.items():
+        p50 = stages.get(stage, {}).get("0.5")
+        if p50 is not None and p50 > limit:
+            warn(f"{name}: {stage} p50 {p50 * 1000:.0f} ms > {limit * 1000:.0f} ms: looks CPU-bound; check the "
+                 "worker's GPU provider (e.g. onnxruntime CUDA libraries) before load testing")
+
+
 def _check(app: AppConfig, args) -> int:
     scenario = _scenario(app, args)
     problems: list[str] = []
@@ -222,6 +244,7 @@ def _check(app: AppConfig, args) -> int:
                         ok(f"{name}: status reachable, running={status.running}, "
                            f"{len(status.active_cameras)} active cameras")
                         _report_clock(name, client, ok, warn)
+                        _report_stage_times(name, client, worker.metrics, ok, warn)
                     except Exception as exc:
                         fail(f"{name}: /worker/status failed: {exc}")
                     if worker.note:
@@ -376,7 +399,7 @@ def _print_summary(summary: dict) -> None:
     if summary.get("error"):
         print(f"  error: {summary['error']}")
     if summary.get("aborted"):
-        print(f"  aborted by guard: {summary['aborted']}")
+        print(f"  aborted ({summary['aborted']})")
     if summary.get("capacity_note"):
         print(f"  {summary['capacity_note']}")
     for name, result in (summary.get("throughput") or {}).items():
@@ -389,6 +412,9 @@ def _print_summary(summary: dict) -> None:
             for name, entry in stage["workers"].items()
         )
         print(f"  {stage['name']:<22} {cells}")
+        for name, entry in stage["workers"].items():
+            if (entry.get("verdict") or {}).get("hint"):
+                print(f"  {'':<22} {name}: {entry['verdict']['hint']}")
     teardown = summary.get("teardown") or {}
     for worker, keys in (teardown.get("manual_review") or {}).items():
         if keys:

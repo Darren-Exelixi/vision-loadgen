@@ -1,18 +1,20 @@
-"""Prometheus metrics endpoint for a run, written with the stdlib only.
+"""Live metrics endpoint for a run (Prometheus text format), written with the stdlib only.
 
-Worker images get this package copied in without pip, so prometheus_client is not an option;
-the text exposition format for gauges and counters is simple enough to write directly.
-Off unless a port is configured (LOADGEN_METRICS_PORT / --metrics-port).
+The web UI reads a run through it; anything that speaks the format can scrape it too. Worker
+images get this package copied in without pip, so prometheus_client is not an option; the text
+exposition format for gauges and counters is simple enough to write and parse directly.
+Off unless a port is configured (--metrics-port; the UI always sets one).
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ METRICS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "loadgen_frames_sent_total": ("counter", "Frame pointers sent to Kafka", ()),
     "loadgen_frames_acked_total": ("counter", "Frame pointers acknowledged by Kafka", ()),
     "loadgen_publish_errors_total": ("counter", "Frame pointers Kafka rejected", ()),
+    "loadgen_publish_rate": ("gauge", "Frame pointers acknowledged per second since the previous sample", ()),
+    "loadgen_abort_info": ("gauge", "Why the run was aborted (always 1; absent unless aborted)", ("reason",)),
     "loadgen_worker_up": ("gauge", "1 when the worker's /worker/status answered", ("worker",)),
     "loadgen_worker_running": ("gauge", "1 when the worker reports its pipeline running", ("worker",)),
     "loadgen_consumer_lag": ("gauge", "Kafka consumer lag of the worker's consumer groups", ("worker",)),
@@ -44,6 +48,10 @@ METRICS: dict[str, tuple[str, str, tuple[str, ...]]] = {
                                                ("worker", "gpu_copy")),
     "loadgen_gpu_workers_expected": ("gauge", "GPU model copies the worker should run at this stage",
                                      ("worker",)),
+    "loadgen_worker_stage_seconds": ("gauge", "Worker's own per-frame time in each pipeline stage, "
+                                              "since the previous sample", ("worker", "stage", "quantile")),
+    "loadgen_worker_processed_fps": ("gauge", "Synthetic-camera frames the worker processed per second "
+                                              "(from its own metrics)", ("worker",)),
     "loadgen_clock_offset_seconds": ("gauge", "Worker clock minus this machine's clock", ("worker",)),
     "loadgen_threshold_seconds": ("gauge", "Scenario thresholds (max_staleness: keep-up limit; "
                                            "guard: allowed real-camera staleness increase)", ("kind",)),
@@ -68,8 +76,35 @@ def _number(value: float) -> str:
     return repr(float(value))
 
 
+_LINE = re.compile(r"^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{(.*)\})?\s+(\S+)(?:\s+\S+)?$")
+_LABEL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\]|\\.)*)"')
+
+
+def parse_exposition(text: str, names: Optional[Iterable[str]] = None) -> dict[str, list[dict[str, Any]]]:
+    """{metric: [{"labels": {...}, "value": float}]} from Prometheus text, optionally only `names`.
+
+    Histogram series keep their suffixed names (`x_bucket` with an `le` label, `x_count`, `x_sum`).
+    """
+    wanted = set(names) if names is not None else None
+    metrics: dict[str, list[dict[str, Any]]] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        match = _LINE.match(line)
+        if not match or (wanted is not None and match.group(1) not in wanted):
+            continue
+        labels = {key: value.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
+                  for key, value in _LABEL.findall(match.group(2) or "")}
+        try:
+            value = float(match.group(3))
+        except ValueError:
+            continue
+        metrics.setdefault(match.group(1), []).append({"labels": labels, "value": value})
+    return metrics
+
+
 class MetricsExporter:
-    def __init__(self, run_id: str, addr: str = "0.0.0.0", port: int = 9464) -> None:
+    def __init__(self, run_id: str, addr: str = "127.0.0.1", port: int = 9464) -> None:
         self.run_id = run_id
         self.addr = addr
         self.port = port

@@ -208,21 +208,28 @@ it; it is never enabled itself and survives `cleanup --orphans`.
 
 `vision-loadgen ui` is a stdlib-only local page over the same CLI: it starts allowlisted commands
 as child processes (stopping a run through `LOADGEN_STOP_FILE`, since signals cannot reach a
-console-less child on Windows), polls the run's metrics endpoint for live charts, and reads past
+console-less child on Windows), polls the run's metrics endpoint for live charts, follows worker
+containers' `docker logs` over ssh (the workers have no log endpoint), and reads past
 runs from the results folder.
 
-### Observability (Prometheus / Grafana)
+### Observability
 
-With `LOADGEN_METRICS_PORT` (or `--metrics-port`) set, `run` also serves `/metrics` in the
-Prometheus text format (`vision_loadgen/exporter.py`, stdlib only so worker images need nothing
-new). The `Recorder` publishes each sample batch — the same p50/p95/max staleness, lag and
-real-camera excess that go to `timeseries.csv`, plus staleness p95 per GPU model copy — and the
-runner publishes run info, phase, current stage, thresholds, per-stage verdicts, the throughput
-result and clock offsets. Every series carries `run_id`, so one Prometheus holds many runs.
-After a run the endpoint lingers (`metrics_linger_s`, 15 s) for a final scrape. `monitoring/`
-provisions Prometheus (5 s scrape, file-based targets, 90-day retention) and Grafana with the
-`vision-loadgen` dashboard; `tests/test_dashboard.py` fails if the dashboard queries a metric the
-exporter does not declare. The CSV/JSON outputs are unchanged and remain the record of a run.
+With `--metrics-port` set (the web UI always sets it), `run` serves `/metrics` in the Prometheus
+text format on 127.0.0.1 (`vision_loadgen/exporter.py`, stdlib only so worker images need nothing
+new). The `Recorder` publishes each sample batch (the same p50/p95/max staleness, lag, real-camera
+excess and publish rate that go to `timeseries.csv`, plus staleness p95 per GPU model copy and
+the worker's own stage times and processed fps) and the runner publishes run info, phase, current
+stage, thresholds, per-stage verdicts, the abort reason, the throughput result and clock offsets.
+Every series carries `run_id`. After a run the endpoint lingers (`metrics_linger_s`, 15 s) so the
+UI reads the final verdicts. The CSV/JSON outputs remain the record of a run. (A Prometheus +
+Grafana stack was tried and dropped: the UI covers it.)
+
+Worker internals: a preset may name the worker's own metrics endpoint (`metrics.path`), a per-stage
+time histogram and a per-camera frames counter. The sampler reads it with each status sample and
+keeps the previous cumulative values, so each sample carries stage p50/p95 and processed fps for
+the interval since the previous one (a counter reset skips an interval). `metrics.gpu_stage_limits`
+turns a slow stage into a verdict hint, not a failure: staging's emotion worker once ran SCRFD on the
+CPU because onnxruntime could not load its CUDA provider, which staleness alone did not explain.
 
 ## Safety
 
@@ -230,6 +237,11 @@ exporter does not declare. The CSV/JSON outputs are unchanged and remain the rec
   staleness before publishing anything, then trips if real p95 exceeds the baseline by
   `max_real_staleness_increase_s` for `grace_s`. The guard either aborts the run or backs off
   by removing cameras.
+- **Worker-health guard** (on by default, also with `--no-guard`): aborts when a worker's status
+  endpoint has failed for `unreachable_s`, or its consumer backlog exceeds `max_backlog_s` of
+  publishing and is still growing after `grace_s`. The real-camera guard skips failed samples
+  and has nothing to compare in a corpus run, so without this a dying worker kept receiving
+  load (staging: the sentiment worker at 5000% CPU and 150 GiB).
 - `--no-guard` is accepted only for **throughput** scenarios in **staging**.
 - Production runs require `--allow-production`, and the guard cannot be disabled there. An
   unset `LOADGEN_ENVIRONMENT` counts as production, since worker images run in both.

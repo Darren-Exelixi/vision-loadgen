@@ -15,6 +15,7 @@ from typing import Any, Optional
 from vision_loadgen.analysis import (
     RealCameraGuard,
     StageVerdict,
+    WorkerHealthGuard,
     WorkerSample,
     max_sustained,
     soak_summary,
@@ -90,6 +91,8 @@ class Runner:
         self._pending_count: Optional[int] = None
         self._settled_at = 0.0
         self.exporter: Optional[MetricsExporter] = None
+        # Independent of --no-guard, which is about real cameras.
+        self.health = WorkerHealthGuard(scenario.guard)
 
     def run(self) -> dict[str, Any]:
         registry = Registry.create(self.app.output.results_dir, new_run_id(), self.app.environment)
@@ -148,13 +151,16 @@ class Runner:
                 synthetic_ids=synthetic_ids,
                 interval_s=self.app.output.sample_interval_s,
                 cameras_per_worker={name: self.app.workers[name].cameras_per_worker for name in self.scenario.workers},
+                worker_metrics={name: self.app.workers[name].metrics for name in self.scenario.workers},
             )
             # Baseline before anything is enabled: the workers' real cameras as they normally run.
             self._phase("baseline")
             guard = self._calibrated_guard(sampler)
             summary["guard_baseline_real_cameras"] = {worker: len(cams) for worker, cams in guard.baseline.items()}
 
-            recorder = Recorder(registry.directory, self.scenario.workers, self.exporter)
+            recorder = Recorder(registry.directory, self.scenario.workers, self.exporter,
+                                stage_columns={name: self.app.workers[name].metrics.stages
+                                               for name in self.scenario.workers})
             registry.run_started_at = time.time()
             registry.set_status("running")
             self._phase("running")
@@ -267,6 +273,7 @@ class Runner:
         active.set_count(count, now, restart=True)
         self._settled_at = now + self.scenario.settle_s
         guard.hold(self._settled_at)
+        self.health.hold(self._settled_at)
         if publish:
             pacer.set_active(count, time.monotonic())
 
@@ -308,7 +315,10 @@ class Runner:
                 self._metric("loadgen_gpu_workers_expected", entry["gpu_workers_expected"], worker=name)
                 if stage.evaluate and completed:
                     window_start = max(measured_from, stage_ended - self.scenario.saturation.window_s)
-                    verdict = stage_verdict(stage_samples, window_start, self.scenario.saturation)
+                    verdict = stage_verdict(stage_samples, window_start, self.scenario.saturation,
+                                            self.app.workers[name].metrics.gpu_stage_limits)
+                    if verdict.hint:
+                        log.warning("%s at %s: %s", name, stage.name, verdict.hint)
                     entry["verdict"] = asdict(verdict)
                     labels = {"worker": name, "stage": stage.name, "stage_index": stage_index}
                     self._metric("loadgen_stage_kept_up", 1 if verdict.kept_up else 0, **labels)
@@ -357,10 +367,14 @@ class Runner:
             recorder.record(stage.name, active.count, producer.stats(), batch,
                             {sample.worker: guard.excess(sample) for sample in batch if sample.ok})
             self._export_clock_offsets()
+            publish_rate = active.count * self.scenario.fps_per_camera
             for sample in batch:
                 reason = guard.check(sample)
                 if reason:
                     self._on_guard_trip(reason, sample.worker, pacer, active, guard)
+                reason = self.health.check(sample, publish_rate)
+                if reason:
+                    self._abort(f"worker health: {reason}")
 
     def _on_guard_trip(self, reason: str, worker: str, pacer: Pacer, active: ActiveCameras,
                        guard: RealCameraGuard) -> None:
@@ -375,8 +389,13 @@ class Runner:
                 pacer.set_active(remaining, time.monotonic())
                 active.set_count(remaining, time.time())
             return
-        log.error("Guard: %s; aborting", reason)
-        self.abort_reason = reason
+        self._abort(f"guard: {reason}")
+
+    def _abort(self, reason: str) -> None:
+        if self.abort_reason is None:
+            log.error("Aborting: %s", reason)
+            self.abort_reason = reason
+            self._metric("loadgen_abort_info", 1, reason=reason)
         self.stop_event.set()
 
     def _add_results(self, summary: dict[str, Any], registry: Registry) -> None:

@@ -143,7 +143,15 @@ class WorkerClient:
     def status(self) -> WorkerStatus:
         return parse_status(self._call("GET", "/worker/status", timeout_s=self._timeout_s))
 
+    def metrics_text(self, path: str) -> str:
+        """The worker's own Prometheus exposition at `path` (relative to the API prefix)."""
+        return self._request("GET", "/" + path.lstrip("/"), timeout_s=self._timeout_s).decode("utf-8", "replace")
+
     def _call(self, method: str, path: str, timeout_s: float) -> dict:
+        raw = self._request(method, path, timeout_s)
+        return _data(json.loads(raw.decode("utf-8") or "{}"))
+
+    def _request(self, method: str, path: str, timeout_s: float) -> bytes:
         url = f"{self._root}{path}"
         req = urllib.request.Request(
             url,
@@ -156,11 +164,10 @@ class WorkerClient:
             with urllib.request.urlopen(req, timeout=timeout_s) as response:
                 raw = response.read()
                 self._record_clock(sent, time.time(), response.headers.get("Date"))
-                body = json.loads(raw.decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             raise RuntimeError(f"{method} {url} returned HTTP {exc.code}: {detail}") from exc
-        return _data(body)
+        return raw
 
     def _record_clock(self, sent: float, received: float, date_header: Optional[str]) -> None:
         if not date_header:

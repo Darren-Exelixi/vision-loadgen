@@ -12,12 +12,14 @@ from typing import Optional
 from vision_loadgen.analysis import (
     WorkerSample,
     group_by_gpu_worker,
+    histogram_quantile,
     percentile,
     real_staleness,
     synthetic_staleness_by_camera,
 )
 from vision_loadgen.capacity import gpu_worker_map
-from vision_loadgen.exporter import MetricsExporter
+from vision_loadgen.config import WorkerMetricsConfig
+from vision_loadgen.exporter import MetricsExporter, parse_exposition
 from vision_loadgen.kafka_io import LagReader, ProducerStats
 from vision_loadgen.workers import WorkerClient
 
@@ -52,6 +54,71 @@ class ActiveCameras:
             return active, {camera_id: self._activated_at[camera_id] for camera_id in active}
 
 
+QUANTILES = ("0.5", "0.95")
+
+
+def stage_buckets(text: str, histogram: str) -> dict[str, dict[float, float]]:
+    """stage -> {upper bound: cumulative count} from a worker's exposition."""
+    buckets: dict[str, dict[float, float]] = {}
+    for item in parse_exposition(text, [f"{histogram}_bucket"]).get(f"{histogram}_bucket", []):
+        stage, bound = item["labels"].get("stage"), item["labels"].get("le")
+        if stage is None or bound is None:
+            continue
+        try:
+            buckets.setdefault(stage, {})[float(bound)] = item["value"]
+        except ValueError:
+            continue
+    return buckets
+
+
+def stage_quantiles(buckets: dict[str, dict[float, float]]) -> dict[str, dict[str, float]]:
+    """stage -> {"0.5": s, "0.95": s}; stages without observations are left out."""
+    result = {}
+    for stage, counts in buckets.items():
+        ordered = sorted(counts.items())
+        values = {q: histogram_quantile(float(q), ordered) for q in QUANTILES}
+        if all(value is not None for value in values.values()):
+            result[stage] = values
+    return result
+
+
+class WorkerInternals:
+    """A worker's own metrics turned into per-interval values: stage time quantiles and the rate
+    at which it processed synthetic cameras' frames. Its counters are cumulative since the worker
+    started, so each sample uses the difference from the previous one; a worker restart (counts
+    going down) skips one interval."""
+
+    def __init__(self, cfg: WorkerMetricsConfig, synthetic_ids: set[str]) -> None:
+        self.cfg = cfg
+        self._synthetic_ids = synthetic_ids
+        self._buckets: Optional[dict[str, dict[float, float]]] = None
+        self._frames: Optional[tuple[float, float]] = None
+
+    def update(self, text: str, t: float) -> tuple[dict[str, dict[str, float]], Optional[float]]:
+        stages: dict[str, dict[str, float]] = {}
+        if self.cfg.stage_histogram:
+            current = stage_buckets(text, self.cfg.stage_histogram)
+            if self._buckets is not None:
+                deltas = {}
+                for stage, counts in current.items():
+                    previous = self._buckets.get(stage, {})
+                    delta = {bound: count - previous.get(bound, 0.0) for bound, count in counts.items()}
+                    if all(value >= 0 for value in delta.values()):
+                        deltas[stage] = delta
+                stages = stage_quantiles(deltas)
+            self._buckets = current
+        fps = None
+        if self.cfg.frames_counter:
+            series = parse_exposition(text, [self.cfg.frames_counter]).get(self.cfg.frames_counter, [])
+            frames = sum(item["value"] for item in series if item["labels"].get("camera_id") in self._synthetic_ids)
+            if self._frames is not None:
+                previous_t, previous = self._frames
+                if t > previous_t and frames >= previous:
+                    fps = (frames - previous) / (t - previous_t)
+            self._frames = (t, frames)
+        return stages, fps
+
+
 class Sampler:
     def __init__(
         self,
@@ -62,6 +129,7 @@ class Sampler:
         synthetic_ids: set[str],
         interval_s: float,
         cameras_per_worker: Optional[dict[str, Optional[int]]] = None,
+        worker_metrics: Optional[dict[str, WorkerMetricsConfig]] = None,
     ) -> None:
         self._clients = clients
         self._group_prefixes = group_prefixes
@@ -70,6 +138,11 @@ class Sampler:
         self._synthetic_ids = synthetic_ids
         self._interval_s = interval_s
         self._cameras_per_worker = cameras_per_worker or {}
+        self._internals = {
+            name: WorkerInternals(cfg, synthetic_ids)
+            for name, cfg in (worker_metrics or {}).items() if cfg.path and name in clients
+        }
+        self._internals_failed: set[str] = set()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.batches: "queue.Queue[list[WorkerSample]]" = queue.Queue()
@@ -89,6 +162,7 @@ class Sampler:
             except Exception as exc:
                 batch.append(WorkerSample(worker=name, t=time.time(), ok=False, lag=lag, error=str(exc)))
                 continue
+            stage_seconds, processed_fps = self._read_internals(name, client)
             now = time.time()
             by_camera = synthetic_staleness_by_camera(now, active_ids, activated_at, status.processed_timestamps)
             cameras_per_worker = self._cameras_per_worker.get(name)
@@ -105,8 +179,24 @@ class Sampler:
                                               self._synthetic_ids, status.processed_timestamps),
                 gpu_staleness=group_by_gpu_worker(by_camera, gpu_worker_map(status.active_cameras, cameras_per_worker))
                 if cameras_per_worker else {},
+                stage_seconds=stage_seconds,
+                processed_fps=processed_fps,
             ))
         return batch
+
+    def _read_internals(self, name: str, client: WorkerClient) -> tuple[dict[str, dict[str, float]], Optional[float]]:
+        """Optional: a worker without a metrics endpoint (or an unreachable one) never fails a sample."""
+        internals = self._internals.get(name)
+        if internals is None:
+            return {}, None
+        try:
+            text = client.metrics_text(internals.cfg.path)
+        except Exception as exc:
+            if name not in self._internals_failed:
+                self._internals_failed.add(name)
+                log.warning("%s: worker metrics unavailable (%s); stage times will be missing", name, exc)
+            return {}, None
+        return internals.update(text, time.time())
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="loadgen-sampler", daemon=True)
@@ -129,10 +219,13 @@ def _fmt(value: Optional[float], digits: int = 1) -> str:
 
 
 class Recorder:
-    """Console line, timeseries.csv row and (optionally) Prometheus metrics per sample batch."""
+    """Console line, timeseries.csv row and (optionally) live metrics per sample batch."""
 
-    def __init__(self, directory: Path, workers: list[str], exporter: Optional[MetricsExporter] = None) -> None:
+    def __init__(self, directory: Path, workers: list[str], exporter: Optional[MetricsExporter] = None,
+                 stage_columns: Optional[dict[str, list[str]]] = None) -> None:
         self._workers = workers
+        # Worker stages written to the CSV (its columns are fixed when the file is opened).
+        self._stage_columns = stage_columns or {}
         self._exporter = exporter
         self._started = time.time()
         self._last_acked = 0
@@ -141,7 +234,8 @@ class Recorder:
         columns = ["time", "elapsed_s", "stage", "active_cameras", "sent", "acked", "errors", "publish_rate"]
         for worker in workers:
             columns += [f"{worker}_ok", f"{worker}_lag", f"{worker}_staleness_p50", f"{worker}_staleness_p95",
-                        f"{worker}_staleness_max", f"{worker}_real_excess"]
+                        f"{worker}_staleness_max", f"{worker}_real_excess", f"{worker}_processed_fps"]
+            columns += [f"{worker}_stage_{stage}_p95" for stage in self._stage_columns.get(worker, [])]
         self._writer = csv.writer(self._file)
         self._writer.writerow(columns)
 
@@ -158,27 +252,34 @@ class Recorder:
         parts = []
         for worker in self._workers:
             sample = by_worker.get(worker)
+            stages = self._stage_columns.get(worker, [])
             if sample is None or not sample.ok:
-                row += [False, sample.lag if sample else None, None, None, None, None]
+                row += [False, sample.lag if sample else None, None, None, None, None, None] + [None] * len(stages)
                 parts.append(f"{worker}: DOWN")
                 continue
             p50 = percentile(sample.synthetic_staleness, 50)
             p95 = percentile(sample.synthetic_staleness, 95)
             worst = max(sample.synthetic_staleness) if sample.synthetic_staleness else None
-            row += [True, sample.lag, _fmt(p50, 2), _fmt(p95, 2), _fmt(worst, 2), _fmt(excess.get(worker), 2)]
-            parts.append(f"{worker}: lag={sample.lag if sample.lag is not None else '-'} "
-                         f"p95={_fmt(p95)}s real+={_fmt(excess.get(worker))}s")
+            row += [True, sample.lag, _fmt(p50, 2), _fmt(p95, 2), _fmt(worst, 2), _fmt(excess.get(worker), 2),
+                    _fmt(sample.processed_fps, 1)]
+            row += [_fmt(sample.stage_seconds.get(stage, {}).get("0.95"), 4) for stage in stages]
+            part = (f"{worker}: lag={sample.lag if sample.lag is not None else '-'} "
+                    f"p95={_fmt(p95)}s real+={_fmt(excess.get(worker))}s")
+            if sample.processed_fps is not None:
+                part += f" done={sample.processed_fps:.1f}/s"
+            parts.append(part)
         self._writer.writerow(row)
         self._file.flush()
         if self._exporter is not None:
-            self._export(active, stats, by_worker, excess)
+            self._export(active, stats, rate, by_worker, excess)
         print(f"[{now - self._started:7.0f}s] {stage:<14} cams={active:<4} pub={rate:7.1f}/s "
               f"err={stats.errors} | " + " | ".join(parts), flush=True)
 
-    def _export(self, active: int, stats: ProducerStats, by_worker: dict[str, WorkerSample],
+    def _export(self, active: int, stats: ProducerStats, rate: float, by_worker: dict[str, WorkerSample],
                 excess: dict[str, Optional[float]]) -> None:
         exporter = self._exporter
         exporter.set("loadgen_active_cameras", active)
+        exporter.set("loadgen_publish_rate", rate)
         exporter.set("loadgen_frames_sent_total", stats.sent)
         exporter.set("loadgen_frames_acked_total", stats.acked)
         exporter.set("loadgen_publish_errors_total", stats.errors)
@@ -192,6 +293,8 @@ class Recorder:
                 exporter.set("loadgen_worker_running", None, worker=worker)
                 exporter.clear("loadgen_synthetic_staleness_seconds", worker=worker)
                 exporter.set("loadgen_real_staleness_excess_seconds", None, worker=worker)
+                exporter.clear("loadgen_worker_stage_seconds", worker=worker)
+                exporter.set("loadgen_worker_processed_fps", None, worker=worker)
                 continue
             values = sample.synthetic_staleness
             exporter.set("loadgen_worker_running", 1 if sample.running else 0, worker=worker)
@@ -203,6 +306,12 @@ class Recorder:
             for index, copy_values in sample.gpu_staleness.items():
                 exporter.set("loadgen_gpu_copy_staleness_p95_seconds", percentile(copy_values, 95),
                              worker=worker, gpu_copy=index)
+            # A stage with no frames in this interval keeps its last value rather than flickering out.
+            for stage, quantiles in sample.stage_seconds.items():
+                for quantile, value in quantiles.items():
+                    exporter.set("loadgen_worker_stage_seconds", value, worker=worker, stage=stage, quantile=quantile)
+            if sample.processed_fps is not None:
+                exporter.set("loadgen_worker_processed_fps", sample.processed_fps, worker=worker)
 
     def close(self) -> None:
         self._file.close()

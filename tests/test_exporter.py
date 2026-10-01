@@ -7,7 +7,7 @@ import pytest
 from vision_loadgen.analysis import WorkerSample
 from vision_loadgen.config import OutputConfig
 from vision_loadgen.environment import build_app_config
-from vision_loadgen.exporter import CONTENT_TYPE, METRICS, MetricsExporter
+from vision_loadgen.exporter import CONTENT_TYPE, METRICS, MetricsExporter, parse_exposition
 from vision_loadgen.kafka_io import ProducerStats
 from vision_loadgen.metrics import Recorder
 
@@ -132,6 +132,48 @@ def test_recorder_exports_each_batch(tmp_path):
     assert exporter.value("loadgen_gpu_copy_staleness_p95_seconds", worker="crowd", gpu_copy=1) is None
     assert exporter.value("loadgen_frames_sent_total") == 20
     recorder.close()
+
+
+def test_recorder_publish_rate_and_worker_stage_times(tmp_path):
+    exporter = MetricsExporter("r")
+    recorder = Recorder(tmp_path, ["emotion"], exporter, stage_columns={"emotion": ["detect", "pose"]})
+    sample = WorkerSample(worker="emotion", t=time.time(), ok=True, running=True, lag=0, synthetic_staleness=[0.5],
+                          stage_seconds={"detect": {"0.5": 0.01, "0.95": 0.02}, "classify": {"0.5": 0.003, "0.95": 0.004}},
+                          processed_fps=24.5)
+    recorder.record("level 5", 5, ProducerStats(sent=10, acked=10), [sample], {})
+    assert exporter.value("loadgen_publish_rate") > 0
+    assert exporter.value("loadgen_worker_stage_seconds", worker="emotion", stage="detect", quantile="0.95") == 0.02
+    assert exporter.value("loadgen_worker_stage_seconds", worker="emotion", stage="classify", quantile="0.5") == 0.003
+    assert exporter.value("loadgen_worker_processed_fps", worker="emotion") == 24.5
+
+    # A quiet interval keeps the last stage values; a failed sample clears them.
+    sample.stage_seconds = {}
+    recorder.record("level 5", 5, ProducerStats(sent=20, acked=20), [sample], {})
+    assert exporter.value("loadgen_worker_stage_seconds", worker="emotion", stage="detect", quantile="0.95") == 0.02
+    recorder.record("level 5", 5, ProducerStats(sent=30, acked=30), [WorkerSample(worker="emotion", t=time.time(), ok=False)], {})
+    assert exporter.value("loadgen_worker_stage_seconds", worker="emotion", stage="detect", quantile="0.95") is None
+    assert exporter.value("loadgen_worker_processed_fps", worker="emotion") is None
+    recorder.close()
+
+    header, first = (tmp_path / "timeseries.csv").read_text().splitlines()[:2]
+    columns = header.split(",")
+    assert columns[-3:] == ["emotion_processed_fps", "emotion_stage_detect_p95", "emotion_stage_pose_p95"]
+    assert first.split(",")[-3:] == ["24.5", "0.0200", "-"]
+
+
+def test_parse_exposition_reads_histograms_and_timestamps():
+    text = ('# TYPE x histogram\nx_bucket{stage="detect",le="0.05"} 3\nx_bucket{stage="detect",le="+Inf"} 4\n'
+            'x_count{stage="detect"} 4\nup 1 1700000000000\nbad{ line\n')
+    parsed = parse_exposition(text)
+    assert parsed["x_bucket"] == [{"labels": {"stage": "detect", "le": "0.05"}, "value": 3.0},
+                                  {"labels": {"stage": "detect", "le": "+Inf"}, "value": 4.0}]
+    assert parsed["up"] == [{"labels": {}, "value": 1.0}]
+    assert set(parse_exposition(text, ["x_count"])) == {"x_count"}
+
+
+def test_endpoint_listens_on_localhost_by_default():
+    assert MetricsExporter("r").addr == "127.0.0.1"
+    assert OutputConfig().metrics_addr == "127.0.0.1"
 
 
 def test_recorder_without_exporter_is_unchanged(tmp_path):

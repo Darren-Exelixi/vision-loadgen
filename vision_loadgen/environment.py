@@ -161,9 +161,13 @@ def base_config(lookup: Lookup, shared: Lookup) -> dict[str, Any]:
         "output": {
             "results_dir": results_dir,
             "metrics_port": _int(lookup("LOADGEN_METRICS_PORT")),
-            "metrics_addr": lookup("LOADGEN_METRICS_ADDR") or "0.0.0.0",
+            "metrics_addr": lookup("LOADGEN_METRICS_ADDR") or "127.0.0.1",
         },
         "events": {"dir": lookup("EVENTS_DIR") or ""},
+        "worker_logs": {
+            "ssh_target": lookup("LOADGEN_WORKER_LOGS_SSH") or "",
+            "docker_command": lookup("LOADGEN_WORKER_LOGS_DOCKER") or "docker",
+        },
         "workers": expand_env(workers, lookup),
     }
 

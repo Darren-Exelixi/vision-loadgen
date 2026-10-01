@@ -1,6 +1,7 @@
 """A stand-in GPU worker with the real contract: service-JWT /worker/sync and /worker/status, a fresh
-timestamped consumer group per (re)start, camera filtering by region assignment + settings row, and
-GpuInferenceEngine's refusal to start when the cameras need more model copies than fit in VRAM."""
+timestamped consumer group per (re)start, camera filtering by region assignment + settings row,
+GpuInferenceEngine's refusal to start when the cameras need more model copies than fit in VRAM, and
+its own Prometheus metrics (per-stage time histogram, frames per camera) like the emotion worker's."""
 
 from __future__ import annotations
 
@@ -36,6 +37,10 @@ class FakeWorker:
         self.syncs = 0
         self.peak_cameras = 0
         self.running = False
+        # Set to make GET /worker/status and /metrics fail, like a worker too busy to answer.
+        self.unresponsive = False
+        self.frames_processed: dict[str, int] = {}
+        self.stage_seconds = 0.004
         self._lock = threading.Lock()
         self._consumer_stop: Optional[threading.Event] = None
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -91,6 +96,19 @@ class FakeWorker:
                 },
             }
 
+    def metrics(self) -> str:
+        with self._lock:
+            frames = dict(self.frames_processed)
+        total = sum(frames.values())
+        lines = ["# TYPE fake_stage_seconds histogram"]
+        for bound in ("0.002", "0.005", "0.05", "0.5", "+Inf"):
+            count = total if float(bound) >= self.stage_seconds else 0
+            lines.append(f'fake_stage_seconds_bucket{{le="{bound}",stage="detect"}} {float(count)}')
+        lines.append(f'fake_stage_seconds_count{{stage="detect"}} {float(total)}')
+        lines.append("# TYPE fake_frames_processed_total counter")
+        lines += [f'fake_frames_processed_total{{camera_id="{camera}"}} {float(count)}' for camera, count in frames.items()]
+        return "\n".join(lines) + "\n"
+
     def _restart_consumer(self) -> None:
         if self._consumer_stop:
             self._consumer_stop.set()
@@ -113,6 +131,7 @@ class FakeWorker:
                             if camera not in self.active:
                                 continue
                             self.processed[camera] = float(record.value["timestamp"])
+                            self.frames_processed[camera] = self.frames_processed.get(camera, 0) + 1
                         if self.on_frame:
                             self.on_frame(camera, record.value)
         finally:
@@ -144,8 +163,18 @@ class FakeWorker:
             def do_GET(self):
                 if not self._authorised():
                     return self._reply(401, {"detail": "Invalid service token"})
+                if worker.unresponsive:
+                    return self._reply(503, {"detail": "busy"})
                 if self.path == "/api/v1/worker/status":
                     return self._reply(200, {"success": True, "data": worker.status()})
+                if self.path == "/api/v1/metrics":
+                    payload = worker.metrics().encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; version=0.0.4")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 self._reply(404, {})
 
             def do_POST(self):

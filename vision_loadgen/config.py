@@ -120,9 +120,10 @@ class RegistrationConfig(BaseModel):
 class OutputConfig(BaseModel):
     results_dir: str = "./loadgen_results"
     sample_interval_s: float = 5.0
-    # Prometheus endpoint for `run`; None = off. Linger keeps it up after the run for a final scrape.
+    # Live metrics endpoint for `run` (what the web UI reads); None = off. Linger keeps it up after
+    # the run so the final values are read.
     metrics_port: Optional[int] = Field(default=None, ge=0, le=65535)
-    metrics_addr: str = "0.0.0.0"
+    metrics_addr: str = "127.0.0.1"
     metrics_linger_s: float = Field(default=15.0, ge=0)
 
     @field_validator("metrics_port", mode="before")
@@ -134,6 +135,18 @@ class OutputConfig(BaseModel):
 class EventsConfig(BaseModel):
     # The workers' EVENTS_DIR, mounted at the same path here; empty = event files are not cleaned.
     dir: str = ""
+
+
+class WorkerLogsConfig(BaseModel):
+    """Where the web UI reads worker container logs (`docker logs`), for its Worker logs tab."""
+
+    # user@host of the Docker host the workers run on, reached with key login (ssh BatchMode);
+    # "" = run docker on this machine.
+    ssh_target: str = ""
+    # How to call docker there, e.g. "sudo -n docker".
+    docker_command: str = "docker"
+    # Lines of history shown when following starts.
+    tail: int = Field(default=300, ge=0, le=100_000)
 
 
 class SettingsTarget(BaseModel):
@@ -172,6 +185,20 @@ class RestoreTarget(BaseModel):
     events_time_column: str = "created_at"
 
 
+class WorkerMetricsConfig(BaseModel):
+    """The worker's own Prometheus endpoint, read once per sample (optional)."""
+
+    # Relative to the worker's api_prefix; "" = the worker has none.
+    path: str = ""
+    # Histogram of per-frame seconds by `stage` label, and counter of frames by `camera_id`.
+    stage_histogram: str = ""
+    frames_counter: str = ""
+    # Stages written to timeseries.csv (all stages are still exported live).
+    stages: list[str] = Field(default_factory=list)
+    # stage -> p50 seconds above which the stage looks CPU-bound; reported as a hint, never a failure.
+    gpu_stage_limits: dict[str, float] = Field(default_factory=dict)
+
+
 class WorkerConfig(BaseModel):
     function_key: str
     database_name: str = ""
@@ -192,6 +219,9 @@ class WorkerConfig(BaseModel):
     gpu_settings_source: str = ""
     # Event files live under EVENTS_DIR/<events_subdir>; defaults to the function key.
     events_subdir: str = ""
+    metrics: WorkerMetricsConfig = Field(default_factory=WorkerMetricsConfig)
+    # Docker container name, for the web UI's Worker logs tab.
+    container: str = ""
     note: str = ""
 
     @field_validator("cameras_per_worker", "vram_per_worker_mb", "gpu_free_vram_mb", mode="before")
@@ -218,6 +248,7 @@ class AppConfig(BaseModel):
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
+    worker_logs: WorkerLogsConfig = Field(default_factory=WorkerLogsConfig)
     workers: dict[str, WorkerConfig] = Field(default_factory=dict)
     # Set when running inside (a one-off container of) a worker: the worker it belongs to.
     local_worker: str = ""
@@ -280,6 +311,13 @@ class GuardConfig(BaseModel):
     grace_s: float = 15.0
     action: Literal["abort", "backoff"] = "abort"
     backoff_step: int = 5
+    # Worker health, independent of real cameras (so it also protects corpus runs, and stays on
+    # with --no-guard). Either check aborts the run; 0 turns a check off.
+    worker_health: bool = True
+    # The worker's status endpoint has failed for this long.
+    unreachable_s: float = 45.0
+    # The consumer backlog is this many seconds of publishing behind, and still growing.
+    max_backlog_s: float = 120.0
 
 
 class SaturationConfig(BaseModel):

@@ -17,6 +17,8 @@ table name. Worker keys are short names; `--worker` also accepts the function ke
   vram_per_worker_mb       "
   api_worker             the engine also holds an API model (counts against VRAM)
   gpu_free_vram_mb       VRAM the worker had free at start; enables the capacity cap
+  metrics                the worker's own Prometheus endpoint: per-stage time and processed fps
+  container              its Docker container (docker-compose-modules.yml), for the UI's Worker logs
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from __future__ import annotations
 WORKER_PRESETS: dict[str, dict] = {
     "crowd": {
         "function_key": "crowd-monitoring",
+        "container": "crowd_monitoring_backend",
         "database_name": "crowd_gathering_db",
         "db_url": "${CROWD_DATABASE_URL}",
         "settings": {"table": "crowd_gathering_settings", "camera_columns": ["selected_cameras"]},
@@ -32,6 +35,7 @@ WORKER_PRESETS: dict[str, dict] = {
     },
     "emotion": {
         "function_key": "sentiment-analysis",
+        "container": "sentiment_analysis_backend",
         "database_name": "emotion_detection_db",
         "db_url": "${SENTIMENT_DATABASE_URL}",
         "settings": {"table": "emotion_settings", "camera_columns": ["selected_cameras"]},
@@ -40,10 +44,19 @@ WORKER_PRESETS: dict[str, dict] = {
             {"table": "emotion_events", "file_columns": ["image_path", "video_path"]},
             {"table": "emotion_rollups"},
         ],
+        "metrics": {
+            "path": "/metrics",
+            "stage_histogram": "emotion_stage_seconds",
+            "frames_counter": "emotion_frames_processed_total",
+            "stages": ["frame_total", "detect", "classify", "identify", "pose"],
+            # SCRFD face detection takes milliseconds on the GPU and hundreds on the CPU.
+            "gpu_stage_limits": {"detect": 0.15},
+        },
         "note": "Frames outside emotion_settings active hours / working days are skipped; run inside that window.",
     },
     "attendance": {
         "function_key": "ai-attendance",
+        "container": "frs_backend",
         "database_name": "frs_db",
         "db_url": "${ATTENDANCE_DATABASE_URL}",
         "settings": {"table": "frs_settings", "camera_columns": ["check_in_cameras"]},

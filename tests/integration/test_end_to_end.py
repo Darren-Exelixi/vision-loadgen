@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -259,7 +260,13 @@ registration: {{template_camera_id: "{seed['template']}", sync_timeout_s: 30}}
 output: {{results_dir: "{(tmp / 'results').as_posix()}", sample_interval_s: 1}}
 events: {{dir: "{events.as_posix()}"}}
 workers:
-  crowd: {{db_url: "{PG.format('crowd')}", cameras_per_worker: 2, vram_per_worker_mb: 100, gpu_free_vram_mb: 200}}
+  crowd:
+    db_url: "{PG.format('crowd')}"
+    cameras_per_worker: 2
+    vram_per_worker_mb: 100
+    gpu_free_vram_mb: 200
+    metrics: {{path: /metrics, stage_histogram: fake_stage_seconds, frames_counter: fake_frames_processed_total,
+              stages: [detect], gpu_stage_limits: {{detect: 0.15}}}}
   attendance: {{db_url: "{PG.format('frs')}"}}
 """, encoding="utf-8")
         (tmp / "scenario.yaml").write_text("""
@@ -366,6 +373,14 @@ def test_run_publishes_measures_and_cleans_up(stack):
             assert entry["staleness_p95"] is not None and entry["staleness_p95"] < 5
         assert stage["workers"]["crowd"]["gpu_workers_expected"] == 2
         assert set(stage["workers"]["crowd"]["gpu_workers"]) <= {"0", "1"}
+        # The worker's own metrics: 4 ms detect (under the 5 ms bucket) and frames it processed.
+        crowd_stats = stage["workers"]["crowd"]
+        assert 0.002 < crowd_stats["worker_stage_p95_s"]["detect"] <= 0.005
+        assert crowd_stats["processed_fps"] > 0
+        assert crowd_stats["verdict"]["hint"] == ""
+        assert "worker_stage_p95_s" not in stage["workers"]["attendance"]
+    assert exporter.value("loadgen_worker_stage_seconds", worker="crowd", stage="detect", quantile="0.95") <= 0.005
+    assert exporter.value("loadgen_publish_rate") is not None
     # One re-sync per stage plus the teardown sync.
     assert stack["crowd"].syncs - syncs_before == 3 and stack["frs"].syncs >= 3
     assert stack["side_effects"].done.is_set()
@@ -374,6 +389,8 @@ def test_run_publishes_measures_and_cleans_up(stack):
     with (run_dir / "timeseries.csv").open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert rows and any(row["crowd_lag"] not in ("", "None") for row in rows)
+    assert any(row["crowd_stage_detect_p95"] not in ("", "-") for row in rows)
+    assert any(row["crowd_processed_fps"] not in ("", "-", "0.0") for row in rows)
 
     teardown = summary["teardown"]
     assert teardown["errors"] == []
@@ -404,6 +421,53 @@ def test_run_publishes_measures_and_cleans_up(stack):
     assert teardown["restored"]["attendance"] == {"restored": 1, "deleted": 1}
     events = _sql("frs", "SELECT camera_id::text AS camera FROM frs_recognition_events", fetch=True)
     assert [row["camera"] for row in events] == [template]
+
+
+def test_unresponsive_worker_aborts_and_tears_down(stack):
+    """The worker-health guard stops a run whose worker stops answering, even with --no-guard."""
+    app = _app(stack)
+    scenario_path = stack["tmp"] / "health-scenario.yaml"
+    scenario_path.write_text("""
+name: it-health
+type: throughput
+workers: [crowd]
+fps_per_camera: 4
+start_cameras: 1
+step_cameras: 1
+max_cameras: 2
+step_duration_s: 60
+settle_s: 2
+saturation: {window_s: 8}
+guard: {baseline_samples: 2, unreachable_s: 4}
+""", encoding="utf-8")
+    scenario = load_scenario(str(scenario_path), app)
+    crowd = stack["crowd"]
+    runner = Runner(app, scenario, RunOptions(no_guard=True))
+
+    def hang_after_a_few_samples():
+        deadline = time.time() + 90
+        while time.time() < deadline and len(runner.samples["crowd"]) < 4:
+            time.sleep(0.2)
+        crowd.unresponsive = True
+
+    hang = threading.Thread(target=hang_after_a_few_samples, daemon=True)
+    hang.start()
+    started = time.time()
+    try:
+        summary = runner.run()
+    finally:
+        crowd.unresponsive = False
+        hang.join(timeout=5)
+
+    assert summary.get("error") is None, summary.get("error")
+    # 1 s samples: the trip lands 4-5 s after the first failed one.
+    assert re.match(r"worker health: crowd: worker unreachable for [45]s \(limit 4s\)", summary["aborted"] or ""), \
+        summary["aborted"]
+    assert time.time() - started < 50  # well before the 60 s stage would have ended
+    assert summary["teardown"]["errors"] == []
+    assert _one("vision_main", "SELECT count(*) AS n FROM cameras WHERE name LIKE 'loadtest-%%'")["n"] == 0
+    assert _one("crowd", "SELECT selected_cameras::text AS c FROM crowd_gathering_settings")["c"] == json.dumps(
+        [stack["seed"]["template"]])
 
 
 def test_video_corpus_with_video_camera_template(stack, capsys):

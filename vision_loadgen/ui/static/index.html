@@ -20,8 +20,6 @@ header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; bord
 header h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
 .badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--code); color: var(--muted); }
 .badge.prod { background: var(--bad); color: #fff; }
-header .spacer { flex: 1; }
-header a { color: var(--accent); text-decoration: none; font-size: 13px; }
 main { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
 @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
 section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
@@ -59,14 +57,19 @@ pre.console .ok { color: var(--ok); } pre.console .warn { color: var(--warn); } 
 .hint { background: var(--code); border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 12px; }
 progress { width: 100%; height: 8px; margin-top: 6px; }
 .error { color: var(--bad); font-size: 12px; margin-top: 6px; min-height: 1em; }
+.banner { border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; font-size: 13px; }
+.verdict-hint { color: var(--warn); font-size: 11.5px; margin-top: 2px; }
+.logbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.logbar select, .logbar input[type=text] { width: auto; min-width: 160px; }
+.logbar input[type=text] { flex: 1; }
+.logbar label { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--text); font-size: 13px; }
+pre.console.tall { max-height: 640px; min-height: 320px; }
 </style>
 </head>
 <body>
 <header>
   <h1>vision-loadgen</h1>
   <span id="env" class="badge">…</span>
-  <span class="spacer"></span>
-  <a href="http://localhost:3000/d/vision-loadgen/vision-loadgen" target="_blank" rel="noopener">Grafana ↗</a>
 </header>
 
 <main>
@@ -114,7 +117,10 @@ progress { width: 100%; height: 8px; margin-top: 6px; }
     <div class="row">
       <div><label>Server IP</label><input type="text" id="serverIp" placeholder="10.10.10.22"></div>
       <div><label>Scenario</label><select id="scenario"><option>latency</option><option>throughput</option><option>soak</option></select></div>
+      <div><label for="sizing">Model sizing</label><select id="sizing" title="Fixed: enable the largest camera count once, one worker re-sync. Per stage: re-sync at every level so the GPU runs as many model copies as production would; each re-sync restarts the worker's pipeline.">
+        <option value="fixed" selected>fixed</option><option value="per_stage">per stage</option></select></div>
     </div>
+    <p class="muted" style="margin:4px 0 0">Fixed sizing re-syncs the worker once. Per stage restarts its pipeline at every level.</p>
     <label>Template camera (id)</label>
     <input type="text" id="templateCamera">
     <label>Frames from</label>
@@ -146,17 +152,32 @@ progress { width: 100%; height: 8px; margin-top: 6px; }
 
 <div>
   <section class="card">
-    <div class="tabs"><button id="tabLive" class="active">Live</button><button id="tabHistory">History</button></div>
+    <div class="tabs"><button id="tabLive" class="active">Live</button><button id="tabHistory">History</button><button id="tabLogs">Worker logs</button></div>
+    <div id="logsView" hidden>
+      <div class="logbar">
+        <select id="logWorker" aria-label="Worker"></select>
+        <button class="primary" id="logFollowBtn">Follow</button>
+        <button id="logStopBtn" disabled>Stop</button>
+        <input type="text" id="logFilter" placeholder="Filter (text or regex), e.g. KAFKA|onnxruntime" aria-label="Filter">
+        <label><input type="checkbox" id="logProblems"> Warnings and errors only</label>
+      </div>
+      <div class="muted" id="logStatus">Pick a worker and press Follow.</div>
+      <pre class="console tall" id="workerLog"></pre>
+    </div>
+    <div id="liveView">
     <div id="viewTitle" class="muted">No run yet.</div>
+    <div id="abortBanner" class="banner" hidden></div>
     <div class="tiles" id="tiles"></div>
     <div class="charts">
       <div class="chart"><h3>Synthetic staleness p95 (s)</h3><canvas id="cStaleness"></canvas></div>
       <div class="chart"><h3>Kafka consumer lag (messages)</h3><canvas id="cLag"></canvas></div>
       <div class="chart"><h3>Real-camera staleness above baseline (s)</h3><canvas id="cExcess"></canvas></div>
-      <div class="chart"><h3>Synthetic cameras and publish rate</h3><canvas id="cLoad"></canvas></div>
+      <div class="chart"><h3>Synthetic cameras, published and processed frames/s</h3><canvas id="cLoad"></canvas></div>
+      <div class="chart"><h3>Worker stage time p95 (ms), from the worker's own metrics</h3><canvas id="cStages"></canvas></div>
     </div>
     <h3 style="font-size:13px;margin:14px 0 6px">Stage verdicts</h3>
     <table id="verdicts"><thead><tr><th>#</th><th>Stage</th><th>Worker</th><th>Verdict</th><th>p95</th></tr></thead><tbody></tbody></table>
+    </div>
   </section>
 
   <section class="card" id="historyCard" hidden>
@@ -174,7 +195,9 @@ progress { width: 100%; height: 8px; margin-top: 6px; }
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { config: null, jobId: null, offset: 0, runJobId: null, metricsNext: 0, snapshots: [], mode: "live", charts: {} };
+const state = { config: null, jobId: null, offset: 0, runJobId: null, metricsNext: 0, snapshots: [], mode: "live", charts: {},
+                logs: { targets: [], worker: "", offset: 0, lines: [], partial: "", following: false, dirty: true } };
+const MAX_LOG_LINES = 5000;
 const COLORS = ["#2f6fde", "#e07a1f", "#1a8f4c", "#9b51e0", "#c8372d", "#0f9aa5"];
 
 async function api(path, options = {}) {
@@ -198,7 +221,8 @@ async function init() {
   $("copyTarget").value = state.config.copy_target || "";
   $("templateCamera").value = state.config.template_camera || "";
   makeCharts();
-  await Promise.all([refreshUploads(), refreshCorpora(), refreshCameras(), refreshJobs()]);
+  await Promise.all([refreshUploads(), refreshCorpora(), refreshCameras(), refreshJobs(), refreshLogTargets()]);
+  if (location.hash === "#logs") showMode("logs");
   setInterval(tick, 2000);
   setInterval(refreshJobs, 5000);
 }
@@ -238,7 +262,11 @@ async function startJob(action, params, errorEl) {
   try {
     const job = await post("/api/jobs", { action, params });
     selectJob(job.id);
-    if (job.kind === "run") { state.runJobId = job.id; state.metricsNext = 0; state.snapshots = []; showMode("live"); }
+    if (job.kind === "run") {
+      state.runJobId = job.id; state.metricsNext = 0; state.snapshots = []; showMode("live");
+      const target = state.logs.targets.find((t) => params.workers.includes(t.worker));
+      if (target) followLogs(target.worker).catch(() => {});
+    }
     await refreshJobs();
     return job;
   } catch (error) { $(errorEl).textContent = error.message; }
@@ -253,6 +281,7 @@ function testParams() {
     source: document.querySelector("input[name=source]:checked").value,
     corpus: $("runCorpus").value,
     set: $("overrides").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    sizing: $("sizing").value,
     no_guard: $("noGuard").checked,
     keep_events: $("keepEvents").checked,
   };
@@ -352,6 +381,7 @@ async function tick() {
       }
     } catch (error) { /* job list will show it */ }
   }
+  if (state.logs.following) await pollLogs();
   if (state.runJobId && state.mode === "live") {
     try {
       const data = await api(`/api/jobs/${state.runJobId}/metrics?since=${state.metricsNext}`);
@@ -374,7 +404,7 @@ function makeCharts() {
       plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } } },
     },
   });
-  for (const [key, id] of [["staleness", "cStaleness"], ["lag", "cLag"], ["excess", "cExcess"], ["load", "cLoad"]]) {
+  for (const [key, id] of [["staleness", "cStaleness"], ["lag", "cLag"], ["excess", "cExcess"], ["load", "cLoad"], ["stages", "cStages"]]) {
     state.charts[key] = new Chart($(id), base());
   }
   state.charts.excess.options.scales.y.beginAtZero = false;
@@ -396,10 +426,15 @@ function renderModel(model) {
   setChart(state.charts.excess, model.x, [...model.excess, model.guard && { label: "guard limit", values: model.x.map(() => model.guard), color: "#c8372d", dash: true }].filter(Boolean));
   setChart(state.charts.load, model.x, [
     { label: "synthetic cameras", values: model.cameras, stepped: true },
-    { label: "publish rate", values: model.rate, axis: "y1", color: "#1a8f4c" },
+    { label: "published", values: model.rate, axis: "y1", color: "#1a8f4c" },
+    ...model.processed.map((p, i) => ({ label: `processed (${p.label})`, values: p.values, axis: "y1", dash: true,
+                                        color: COLORS[(3 + i) % COLORS.length] })),
   ]);
+  setChart(state.charts.stages, model.x, model.stages);
+  $("abortBanner").hidden = !model.aborted;
+  $("abortBanner").textContent = model.aborted ? `Aborted: ${model.aborted}` : "";
   $("verdicts").querySelector("tbody").innerHTML = model.verdicts.map((v) =>
-    `<tr><td>${esc(v.index)}</td><td>${esc(v.stage)}</td><td>${esc(v.worker)}</td><td class="${v.kept ? "ok-text" : "bad-text"}">${v.kept ? "kept up" : esc(v.reason || "fell behind")}</td><td>${num(v.p95, 2)}</td></tr>`).join("")
+    `<tr><td>${esc(v.index)}</td><td>${esc(v.stage)}</td><td>${esc(v.worker)}</td><td><span class="${v.kept ? "ok-text" : "bad-text"}">${v.kept ? "kept up" : esc(v.reason || "fell behind")}</span>${v.hint ? `<div class="verdict-hint">${esc(v.hint)}</div>` : ""}</td><td>${num(v.p95, 2)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="muted">Verdicts appear as each stage ends.</td></tr>`;
   $("tiles").innerHTML = model.tiles.map(([k, v]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
 }
@@ -414,11 +449,18 @@ function renderLive(runId) {
   const workers = [...new Set(snaps.flatMap((s) => pick(s.metrics, "loadgen_worker_up").map((m) => m.labels.worker)))];
   const x = snaps.map((s) => Math.round(s.t - t0));
   const perWorker = (name, extra = {}) => workers.map((w) => ({ label: w, values: snaps.map((s) => one(s.metrics, name, { worker: w, ...extra })) }));
-  const rate = snaps.map((s, i) => {
-    if (!i) return null;
-    const a = one(snaps[i - 1].metrics, "loadgen_frames_acked_total"), b = one(s.metrics, "loadgen_frames_acked_total");
-    return a === null || b === null ? null : Math.max(0, (b - a) / (s.t - snaps[i - 1].t));
+  // The run computes the rate once per sample; differencing counters here aliased against the poll.
+  const rate = snaps.map((s) => one(s.metrics, "loadgen_publish_rate"));
+  const stageKeys = [...new Set(snaps.flatMap((s) => pick(s.metrics, "loadgen_worker_stage_seconds", { quantile: "0.95" })
+    .map((m) => `${m.labels.worker}\u0000${m.labels.stage}`)))].sort();
+  const stages = stageKeys.map((key) => {
+    const [w, st] = key.split("\u0000");
+    return { label: workers.length > 1 ? `${w} ${st}` : st,
+             values: snaps.map((s) => { const v = one(s.metrics, "loadgen_worker_stage_seconds", { worker: w, stage: st, quantile: "0.95" }); return v === null ? null : v * 1000; }) };
   });
+  const processedFps = workers.map((w) => ({ label: w, values: snaps.map((s) => one(s.metrics, "loadgen_worker_processed_fps", { worker: w })) }))
+    .filter((p) => p.values.some((v) => v !== null));
+  const abort = pick(last, "loadgen_abort_info")[0];
   const info = pick(last, "loadgen_run_info")[0];
   const phase = pick(last, "loadgen_phase").find((m) => m.value === 1);
   const stage = pick(last, "loadgen_stage_info")[0];
@@ -428,7 +470,8 @@ function renderLive(runId) {
   renderModel({
     x, staleness: perWorker("loadgen_synthetic_staleness_seconds", { quantile: "0.95" }),
     lag: perWorker("loadgen_consumer_lag"), excess: perWorker("loadgen_real_staleness_excess_seconds"),
-    cameras: snaps.map((s) => one(s.metrics, "loadgen_active_cameras")), rate,
+    cameras: snaps.map((s) => one(s.metrics, "loadgen_active_cameras")), rate, processed: processedFps, stages,
+    aborted: abort ? abort.labels.reason : null,
     limit: one(last, "loadgen_threshold_seconds", { kind: "max_staleness" }), guard: one(last, "loadgen_threshold_seconds", { kind: "guard" }),
     verdicts: pick(last, "loadgen_stage_kept_up").map((m) => ({
       index: m.labels.stage_index, stage: m.labels.stage, worker: m.labels.worker, kept: m.value === 1,
@@ -436,6 +479,7 @@ function renderLive(runId) {
     })).sort((a, b) => a.index.localeCompare(b.index) || a.worker.localeCompare(b.worker)),
     tiles: [["Phase", phase ? phase.labels.phase : "–"], ["Stage", stage ? stage.labels.stage : "–"],
             ["Synthetic cameras", num(one(last, "loadgen_active_cameras"), 0)], ["Publish rate", `${num(rate[rate.length - 1])} /s`],
+            ["Processed", processedFps.map((p) => `${p.label} ${num(p.values[p.values.length - 1])}/s`).join(", ") || "–"],
             ["Publish errors", num(errors, 0)], ["Clock offset", offsets || "–"]],
   });
 }
@@ -445,12 +489,93 @@ function showMode(mode) {
   state.mode = mode;
   $("tabLive").classList.toggle("active", mode === "live");
   $("tabHistory").classList.toggle("active", mode === "history");
+  $("tabLogs").classList.toggle("active", mode === "logs");
   $("historyCard").hidden = mode !== "history";
+  $("liveView").hidden = mode === "logs";
+  $("logsView").hidden = mode !== "logs";
   if (mode === "history") refreshRuns();
+  else if (mode === "logs") { refreshLogTargets(); state.logs.dirty = true; renderLogs(); }
   else if (state.snapshots.length) renderLive();
 }
 $("tabLive").onclick = () => showMode("live");
 $("tabHistory").onclick = () => showMode("history");
+$("tabLogs").onclick = () => showMode("logs");
+
+// ------------------------------------------------------------------ worker logs
+async function refreshLogTargets() {
+  try { state.logs.targets = await api("/api/worker-logs"); } catch (error) { state.logs.targets = []; }
+  const select = $("logWorker");
+  const current = state.logs.worker || select.value;
+  select.innerHTML = state.logs.targets.map((t) =>
+    `<option value="${esc(t.worker)}">${esc(t.worker)} (${esc(t.container)})</option>`).join("") || "<option value=''>(no worker containers configured)</option>";
+  if (current) select.value = current;
+  // Attach to a follow already running on the server (one a run started, or from before a reload).
+  const running = state.logs.targets.find((t) => t.following && (!current || t.worker === current)) || state.logs.targets.find((t) => t.following);
+  if (!state.logs.following && running) return followLogs(running.worker).catch(() => {});
+  if (!state.logs.following) $("logStatus").textContent = state.logs.targets.length
+    ? `Reads docker logs on ${state.config.worker_logs_host}. Pick a worker and press Follow.` : "No worker has a container configured.";
+}
+
+async function followLogs(worker) {
+  if (!worker) return;
+  if (worker !== state.logs.worker) Object.assign(state.logs, { lines: [], partial: "", offset: 0 });
+  await post(`/api/worker-logs/${encodeURIComponent(worker)}/start`, {});
+  Object.assign(state.logs, { worker, following: true, dirty: true });
+  $("logWorker").value = worker;
+  $("logStopBtn").disabled = false;
+  await pollLogs();
+}
+
+async function pollLogs() {
+  const logs = state.logs;
+  try {
+    const data = await api(`/api/worker-logs/${encodeURIComponent(logs.worker)}?since=${logs.offset}`);
+    if (data.output) {
+      const parts = (logs.partial + data.output).split("\n");
+      logs.partial = parts.pop();
+      logs.lines.push(...parts.map((line) => line.replace(/\r$/, "")));
+      if (logs.lines.length > MAX_LOG_LINES) logs.lines.splice(0, logs.lines.length - MAX_LOG_LINES);
+      logs.dirty = true;
+    }
+    logs.offset = data.offset;
+    const target = logs.targets.find((t) => t.worker === logs.worker);
+    if (data.running) {
+      $("logStatus").textContent = `Following ${logs.worker} (${target ? target.container : "?"}) on ${state.config.worker_logs_host} · ${logs.lines.length} lines kept`;
+    } else {
+      logs.following = false;
+      $("logStopBtn").disabled = true;
+      $("logStatus").textContent = `Stopped (exit ${data.returncode ?? "?"}). An ssh error above usually means key login is not set up; see README "Worker logs".`;
+    }
+  } catch (error) {
+    logs.following = false;
+    $("logStopBtn").disabled = true;
+    $("logStatus").textContent = `Cannot read logs: ${error.message}`;
+  }
+  if (state.mode === "logs") renderLogs();
+}
+
+function renderLogs() {
+  const logs = state.logs;
+  if (!logs.dirty) return;
+  logs.dirty = false;
+  let pattern = null;
+  const text = $("logFilter").value.trim();
+  if (text) { try { pattern = new RegExp(text, "i"); } catch (error) { pattern = { test: (line) => line.toLowerCase().includes(text.toLowerCase()) }; } }
+  const problems = $("logProblems").checked;
+  const lines = logs.lines.filter((line) => (!pattern || pattern.test(line)) && (!problems || /WARN|ERROR|CRITICAL|Traceback|Exception|Error:/.test(line)));
+  const el = $("workerLog");
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+  el.innerHTML = colorize(lines.join("\n"));
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+$("logFollowBtn").onclick = () => followLogs($("logWorker").value).catch((error) => { $("logStatus").textContent = error.message; });
+$("logStopBtn").onclick = async () => {
+  if (!state.logs.worker) return;
+  await post(`/api/worker-logs/${encodeURIComponent(state.logs.worker)}/stop`, {});
+};
+$("logWorker").onchange = () => { if (state.logs.following && $("logWorker").value !== state.logs.worker) followLogs($("logWorker").value); };
+for (const id of ["logFilter", "logProblems"]) $(id).addEventListener("input", () => { state.logs.dirty = true; renderLogs(); });
 
 async function refreshRuns() {
   const runs = await api("/api/runs");
@@ -472,13 +597,20 @@ $("runsTable").onclick = async (e) => {
   const perWorker = (suffix) => workers.map((w) => ({ label: w, values: timeseries.map((r) => val(r[`${w}_${suffix}`])) }));
   const verdicts = [];
   (summary.stages || []).forEach((stage, i) => Object.entries(stage.workers || {}).forEach(([w, entry]) => {
-    if (entry.verdict) verdicts.push({ index: String(i + 1).padStart(2, "0"), stage: stage.name, worker: w, kept: entry.verdict.kept_up, reason: entry.verdict.reason, p95: entry.verdict.staleness_p95 });
+    if (entry.verdict) verdicts.push({ index: String(i + 1).padStart(2, "0"), stage: stage.name, worker: w, kept: entry.verdict.kept_up, reason: entry.verdict.reason, hint: entry.verdict.hint, p95: entry.verdict.staleness_p95 });
   }));
   const throughput = Object.entries(summary.throughput || {}).map(([w, t]) => `${w} ${t.max_sustained_cameras ?? "–"}`).join(", ");
-  $("viewTitle").textContent = `Run ${summary.run_id} · ${scenario.name} (${scenario.type}, ${summary.environment})${summary.error ? " · error: " + summary.error : ""}${summary.aborted ? " · aborted: " + summary.aborted : ""}`;
+  const columns = timeseries.length ? Object.keys(timeseries[0]) : [];
+  const stages = workers.flatMap((w) => columns.filter((c) => c.startsWith(`${w}_stage_`) && c.endsWith("_p95")).map((c) => ({
+    label: workers.length > 1 ? `${w} ${c.slice(w.length + 7, -4)}` : c.slice(w.length + 7, -4),
+    values: timeseries.map((r) => { const v = val(r[c]); return v === null ? null : v * 1000; }),
+  })));
+  const processed = perWorker("processed_fps").filter((p) => p.values.some((v) => v !== null));
+  $("viewTitle").textContent = `Run ${summary.run_id} · ${scenario.name} (${scenario.type}, ${summary.environment})${summary.error ? " · error: " + summary.error : ""}`;
   renderModel({
     x, staleness: perWorker("staleness_p95"), lag: perWorker("lag"), excess: perWorker("real_excess"),
     cameras: timeseries.map((r) => val(r.active_cameras)), rate: timeseries.map((r) => val(r.publish_rate)),
+    processed, stages, aborted: summary.aborted || null,
     limit: (scenario.saturation || {}).max_staleness_s, guard: (scenario.guard || {}).max_real_staleness_increase_s, verdicts,
     tiles: [["Template", summary.template_camera_id || "–"], ["Source", (scenario.source || {}).mode || "live"],
             ["Stages", String((summary.stages || []).length)], ["Frames acked", String((summary.producer || {}).acked ?? "–")],

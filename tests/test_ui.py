@@ -1,4 +1,5 @@
 import json
+import socket
 import sys
 import threading
 import time
@@ -9,8 +10,17 @@ import pytest
 
 from vision_loadgen.environment import build_app_config
 from vision_loadgen.ui.server import (
-    BadRequest, JobManager, UiServer, build_command, list_corpora, list_runs, load_run, parse_prometheus,
+    BadRequest, JobManager, UiServer, WorkerLogs, build_command, free_port, list_corpora, list_runs, load_run, parse_prometheus,
 )
+
+
+def test_free_port_skips_a_port_held_on_loopback():
+    # Runs listen on 127.0.0.1; on Windows a wildcard-only probe would call this port free.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        assert free_port(port, attempts=5) != port
 
 TEMPLATE = "7797ee15-32d5-46b7-b736-ac078e9b9b8c"
 
@@ -32,11 +42,15 @@ def test_check_and_run_arguments(app, tmp_path):
                     "--set", "source.mode=corpus", "--set", "source.corpus_name=lobby", "--no-guard"]
     assert build_command(app, "run", params, True, tmp_path)[1][-1] == "--allow-production"
     assert build_command(app, "check", params, False, tmp_path)[1][0] == "check"
+    # Sizing comes first, so a typed `sizing=...` override still wins.
+    argv = build_command(app, "run", {**params, "sizing": "fixed"}, False, tmp_path)[1]
+    assert argv[argv.index("--set"):argv.index("--set") + 4] == ["--set", "sizing=fixed", "--set", "levels=[5,10]"]
 
 
 @pytest.mark.parametrize("change", [
     {"workers": []}, {"workers": ["nope"]}, {"server_ip": "10.0.0.1; rm -rf /"}, {"scenario": "stress"},
     {"template_camera": "not-a-uuid"}, {"set": ["bad key=1"]}, {"set": ["novalue"]}, {"source": "corpus", "corpus": "../x"},
+    {"sizing": "huge"},
 ])
 def test_invalid_test_parameters_are_rejected(app, tmp_path, change):
     params = {"workers": ["emotion"], "scenario": "latency", **change}
@@ -183,3 +197,47 @@ def test_http_page_api_upload_and_origin_check(app, tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_worker_log_commands(app, tmp_path):
+    logs = WorkerLogs(app, tmp_path / "logs")
+    assert logs.command("emotion") == ["docker", "logs", "--follow", "--timestamps", "--tail", "300",
+                                       "sentiment_analysis_backend"]
+    assert {t["worker"]: t["container"] for t in logs.targets()} == {
+        "crowd": "crowd_monitoring_backend", "emotion": "sentiment_analysis_backend", "attendance": "frs_backend"}
+    app.worker_logs.ssh_target, app.worker_logs.docker_command = "admin1@10.10.10.22", "sudo -n docker"
+    assert logs.command("attendance") == [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "admin1@10.10.10.22",
+        "sudo", "-n", "docker", "logs", "--follow", "--timestamps", "--tail", "300", "frs_backend"]
+    for change in ({"ssh_target": "admin1@host; rm -rf /"}, {"docker_command": "docker; reboot"}):
+        for key, value in change.items():
+            setattr(app.worker_logs, key, value)
+        with pytest.raises(BadRequest):
+            logs.command("emotion")
+        app.worker_logs.ssh_target, app.worker_logs.docker_command = "admin1@10.10.10.22", "docker"
+    app.workers["emotion"].container = "x y"
+    with pytest.raises(BadRequest):
+        logs.command("emotion")
+    with pytest.raises(BadRequest):
+        logs.command("nope")
+
+
+def test_worker_log_follow_read_and_stop(app, tmp_path, monkeypatch):
+    script = "import time\nprint('2026-10-01T10:00:00Z INFO ready', flush=True)\nprint('WARNING slow', flush=True)\ntime.sleep(60)\n"
+    monkeypatch.setattr(WorkerLogs, "command", lambda self, worker: [sys.executable, "-c", script])
+    logs = WorkerLogs(app, tmp_path / "logs")
+    follow = logs.start("emotion")
+    assert logs.start("emotion") is follow  # already following
+    deadline = time.time() + 15
+    data = logs.read("emotion", 0)
+    while "WARNING slow" not in data["output"] and time.time() < deadline:
+        time.sleep(0.2)
+        data = logs.read("emotion", 0)
+    assert data["running"] and "INFO ready" in data["output"]
+    assert logs.read("emotion", data["offset"])["output"] == ""
+    logs.stop("emotion")
+    follow.process.wait(timeout=10)
+    time.sleep(0.3)
+    assert not logs.read("emotion", 0)["running"]
+    with pytest.raises(KeyError):
+        logs.read("crowd", 0)

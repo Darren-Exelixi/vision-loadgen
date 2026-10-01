@@ -1,4 +1,4 @@
-"""Pure measurement logic: staleness, verdicts and the real-camera guard."""
+"""Pure measurement logic: staleness, verdicts, worker stage times and the guards."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ class WorkerSample:
     real_staleness: dict[str, float] = field(default_factory=dict)
     # Synthetic staleness per GPU model copy (index -> values), when CAMERAS_PER_WORKER is known.
     gpu_staleness: dict[int, list[float]] = field(default_factory=dict)
+    # From the worker's own metrics, over the interval since its previous sample:
+    # stage -> {"0.5": seconds, "0.95": seconds}, and synthetic frames processed per second.
+    stage_seconds: dict[str, dict[str, float]] = field(default_factory=dict)
+    processed_fps: Optional[float] = None
     error: str = ""
 
 
@@ -42,6 +46,27 @@ def slope(points: list[tuple[float, float]]) -> float:
     if denominator == 0:
         return 0.0
     return sum((x - mean_x) * (y - mean_y) for x, y in points) / denominator
+
+
+def histogram_quantile(q: float, buckets: list[tuple[float, float]]) -> Optional[float]:
+    """Prometheus-style quantile from cumulative (upper bound, count) buckets, sorted by bound.
+
+    Interpolates linearly inside the bucket holding the rank; a rank in the +Inf bucket returns
+    the highest finite bound.
+    """
+    if not buckets or buckets[-1][1] <= 0:
+        return None
+    rank = q * buckets[-1][1]
+    lower_bound, lower_count = 0.0, 0.0
+    for bound, count in buckets:
+        if count >= rank:
+            if bound == float("inf"):
+                return lower_bound
+            if count == lower_count:
+                return bound
+            return lower_bound + (bound - lower_bound) * (rank - lower_count) / (count - lower_count)
+        lower_bound, lower_count = bound, count
+    return lower_bound
 
 
 def synthetic_staleness_by_camera(
@@ -92,9 +117,24 @@ class StageVerdict:
     lag_growth_per_s: float
     samples: int
     reason: str
+    # Diagnostic that does not affect kept_up (e.g. a stage that looks CPU-bound).
+    hint: str = ""
 
 
-def stage_verdict(samples: list[WorkerSample], window_start: float, cfg: SaturationConfig) -> StageVerdict:
+def stage_hint(samples: list[WorkerSample], gpu_stage_limits: Optional[dict[str, float]]) -> str:
+    """Stages whose typical p50 exceeds their GPU limit: the model is probably running on the CPU."""
+    notes = []
+    for stage, limit in (gpu_stage_limits or {}).items():
+        p50 = percentile([sample.stage_seconds[stage]["0.5"] for sample in samples
+                          if sample.ok and "0.5" in sample.stage_seconds.get(stage, {})], 50)
+        if p50 is not None and p50 > limit:
+            notes.append(f"{stage} p50 {p50 * 1000:.0f} ms > {limit * 1000:.0f} ms: looks CPU-bound "
+                         "(is the GPU provider loading in the worker?)")
+    return "; ".join(notes)
+
+
+def stage_verdict(samples: list[WorkerSample], window_start: float, cfg: SaturationConfig,
+                  gpu_stage_limits: Optional[dict[str, float]] = None) -> StageVerdict:
     window = [sample for sample in samples if sample.t >= window_start and sample.ok]
     if not window:
         return StageVerdict(False, None, 0.0, 0, "no successful status samples in window")
@@ -111,7 +151,8 @@ def stage_verdict(samples: list[WorkerSample], window_start: float, cfg: Saturat
         reasons.append(f"lag growing {growth:.1f} msg/s > {cfg.max_lag_growth_per_s:.1f}")
     if any(not sample.running for sample in window):
         reasons.append("worker reported not running")
-    return StageVerdict(not reasons, p95, growth, len(window), "; ".join(reasons) or "kept up")
+    return StageVerdict(not reasons, p95, growth, len(window), "; ".join(reasons) or "kept up",
+                        stage_hint(window, gpu_stage_limits))
 
 
 def max_sustained(results: list[tuple[int, StageVerdict]]) -> Optional[int]:
@@ -139,6 +180,18 @@ def stage_stats(samples: list[WorkerSample]) -> dict:
         "lag_max": max(lags) if lags else None,
         "status_failures": sum(1 for sample in samples if not sample.ok),
     }
+    stages: dict[str, list[float]] = {}
+    for sample in samples:
+        if sample.ok:
+            for stage, quantiles in sample.stage_seconds.items():
+                if "0.95" in quantiles:
+                    stages.setdefault(stage, []).append(quantiles["0.95"])
+    if stages:
+        # Typical (median) per-sample p95, so one slow interval does not dominate.
+        stats["worker_stage_p95_s"] = {stage: percentile(values, 50) for stage, values in sorted(stages.items())}
+    fps = [sample.processed_fps for sample in samples if sample.ok and sample.processed_fps is not None]
+    if fps:
+        stats["processed_fps"] = sum(fps) / len(fps)
     if per_gpu:
         stats["gpu_workers"] = {
             str(index): {"staleness_p95": percentile(values, 95), "staleness_max": max(values)}
@@ -222,3 +275,65 @@ class RealCameraGuard:
 
     def reset(self, worker: str) -> None:
         self._breach_since.pop(worker, None)
+
+
+class WorkerHealthGuard:
+    """Trips when a worker stops answering, or its Kafka backlog runs away from it.
+
+    The real-camera guard cannot see either: it skips failed samples, and a corpus run (or a
+    worker with no live cameras) gives it no baseline. Both mean the load is hurting the worker,
+    so a trip always aborts.
+    """
+
+    def __init__(self, cfg: GuardConfig) -> None:
+        self.cfg = cfg
+        self._down_since: dict[str, float] = {}
+        self._backlog: dict[str, list[tuple[float, float]]] = {}
+        self._hold_until = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self.cfg.enabled and self.cfg.worker_health
+
+    def hold(self, until: float) -> None:
+        """A re-sync restarts the worker's pipeline; failures until it settles do not count."""
+        self._hold_until = max(self._hold_until, until)
+        self._down_since.clear()
+        self._backlog.clear()
+
+    def check(self, sample: WorkerSample, publish_rate: float) -> Optional[str]:
+        """`publish_rate`: frames per second currently published to this worker's topic."""
+        if not self.enabled or sample.t < self._hold_until:
+            return None
+        if not sample.ok:
+            return self._check_unreachable(sample)
+        self._down_since.pop(sample.worker, None)
+        return self._check_backlog(sample, publish_rate)
+
+    def _check_unreachable(self, sample: WorkerSample) -> Optional[str]:
+        if self.cfg.unreachable_s <= 0:
+            return None
+        since = self._down_since.setdefault(sample.worker, sample.t)
+        if sample.t - since < self.cfg.unreachable_s:
+            return None
+        return (f"{sample.worker}: worker unreachable for {sample.t - since:.0f}s "
+                f"(limit {self.cfg.unreachable_s:.0f}s): {sample.error or 'no response'}")
+
+    def _check_backlog(self, sample: WorkerSample, publish_rate: float) -> Optional[str]:
+        if self.cfg.max_backlog_s <= 0 or sample.lag is None or publish_rate <= 0:
+            self._backlog.pop(sample.worker, None)
+            return None
+        backlog_s = sample.lag / publish_rate
+        if backlog_s <= self.cfg.max_backlog_s:
+            self._backlog.pop(sample.worker, None)
+            return None
+        points = self._backlog.setdefault(sample.worker, [])
+        points.append((sample.t, float(sample.lag)))
+        over_for = sample.t - points[0][0]
+        # Growth is judged over the last grace_s only: a backlog that has stopped growing is draining.
+        recent = [point for point in points if point[0] >= sample.t - self.cfg.grace_s]
+        points[1:] = [point for point in points[1:] if point in recent]  # keep the breach start and the window
+        if over_for < self.cfg.grace_s or slope(recent) <= 0:
+            return None
+        return (f"{sample.worker}: consumer backlog {sample.lag} messages ({backlog_s:.0f}s of publishing) "
+                f"and still growing after {over_for:.0f}s (limit {self.cfg.max_backlog_s:.0f}s)")

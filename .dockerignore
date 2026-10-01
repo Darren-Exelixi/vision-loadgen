@@ -10,5 +10,4 @@ docker/results/
 loadgen_results/
 tests/
 docs/
-monitoring/
 corpora/

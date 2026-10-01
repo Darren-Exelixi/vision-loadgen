@@ -7,8 +7,7 @@ image next to `vision_shared` when that image is built, so any worker can load-t
 Design, assumptions and open items: [docs/load-generator-design.md](docs/load-generator-design.md).
 
 Layout: `vision_loadgen/` is the package. `Dockerfile` builds the image; `docker/` (compose file,
-`.env.example`, example `--config` file), `monitoring/` (Prometheus + Grafana), `docs/` and
-`tests/` are never installed.
+`.env.example`, example `--config` file), `docs/` and `tests/` are never installed.
 
 Presets exist for crowd monitoring, sentiment analysis (emotion) and AI attendance. Any worker
 built on `vision_shared`'s `KafkaFramePipeline` can be added with a `--config` file (see
@@ -141,12 +140,35 @@ above: upload a video and build a corpus, add or remove video cameras, check, ru
 
 - **Live view:** charts the run as it goes (staleness p95 against the keep-up limit, consumer lag,
   real-camera excess against the guard, cameras and publish rate) plus the stage verdicts.
-  Runs always serve metrics on 9464 (or the next free port), so Grafana sees them too.
+  It also charts the worker's own stage times and processed fps when the worker publishes them,
+  and shows why a run was aborted.
 - **History:** shows any finished run from the results folder.
+- **Worker logs:** follows a worker container's `docker logs` live, with a text/regex filter and
+  a warnings-and-errors switch. Starting a run also follows the first selected worker. See below.
 - **Command output:** each command's output streams into the page. Logs are kept in
   `<results>/ui-jobs/`.
 - **Access:** the page only listens on localhost and accepts no arbitrary commands. Production
   runs need `ui --allow-production`.
+
+### Worker logs
+
+The workers have no log endpoint, so the page runs `docker logs --follow` for the worker's
+container on the Docker host, over ssh:
+
+```powershell
+# once: key login to the modules host (BatchMode never prompts for a password)
+ssh-keygen -t ed25519
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh admin1@10.10.10.22 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+# .env
+LOADGEN_WORKER_LOGS_SSH=admin1@10.10.10.22
+# LOADGEN_WORKER_LOGS_DOCKER=sudo -n docker      # if that user needs sudo for docker
+```
+
+Containers come from the presets (`crowd_monitoring_backend`, `sentiment_analysis_backend`,
+`frs_backend`; override with `workers.<name>.container` in a `--config` file). With
+`LOADGEN_WORKER_LOGS_SSH` empty, docker runs on this machine. A follow stops when the page has not
+read it for 2 minutes or its file passes 200 MB; files are kept in `<results>/ui-jobs/worker-logs/`.
+The page keeps the last 5000 lines. `#logs` opens the tab directly.
 
 ## Commands
 
@@ -176,7 +198,7 @@ python -m vision_loadgen ui [--port 8765]
 - `--environment staging|production`: overrides `LOADGEN_ENVIRONMENT`. **Unset means production**,
   which needs `--allow-production`.
 - `--keep-events`: keep events (rows and files) created by synthetic cameras.
-- `--metrics-port N` (`run`): serve Prometheus metrics on this port during the run (see Grafana).
+- `--metrics-port N` (`run`): serve the live metrics endpoint on this port (the UI sets it).
 
 ## GPU model copies
 
@@ -223,11 +245,26 @@ machines. Real cameras are stamped on the ingestion side; their staleness (repor
 pick) is corrected by the worker's clock offset, estimated from its HTTP `Date` headers. `check`
 prints the offset and `summary.json` records it under `clock_offset`.
 
+Worker stage times: when a worker publishes its own Prometheus metrics (the emotion preset reads
+`/api/v1/metrics`: `emotion_stage_seconds` and `emotion_frames_processed_total`), each sample also
+records the worker's per-stage time (p50/p95 over the interval since the previous sample) and the
+synthetic frames it actually processed per second. They go to the live view, `timeseries.csv`
+(`<worker>_processed_fps`, `<worker>_stage_<stage>_p95`) and each stage's `worker_stage_p95_s` /
+`processed_fps`. A stage slower than its GPU limit (`metrics.gpu_stage_limits`; emotion: `detect`
+150 ms) adds a hint to the verdict, and `check` reports it before a run: a model that fell back
+to the CPU looks like that. Missing metrics never fail a run. Other workers: set `metrics` in a
+`--config` file (see `presets.py`).
+
 ## Safety
 
 - **Real-camera guard** (default on): aborts (or backs off, per scenario) if real cameras fall more
   than `max_real_staleness_increase_s` behind their baseline for `grace_s`. `--no-guard` is
   accepted only for throughput in staging.
+- **Worker-health guard** (default on, also with `--no-guard` and in corpus runs, where there are
+  no real cameras to watch): aborts and tears down when a worker's status endpoint has failed for
+  `guard.unreachable_s` (45 s), or when its consumer backlog exceeds `guard.max_backlog_s` (120 s
+  of publishing) and is still growing after `grace_s`. Re-sync settle windows are ignored. Set
+  either limit to 0 to turn that check off, or `guard.worker_health=false` for both.
 - Every re-sync restarts the worker's pipeline for all its cameras, as adding a camera in the UI
   does. With `sizing: per_stage` that happens once per stage.
 - Synthetic cameras get `ip=127.0.0.1` and blank stream URLs, so nothing opens extra streams.
@@ -245,39 +282,15 @@ prints the offset and `summary.json` records it under `clock_offset`.
 verdicts and per-copy staleness, throughput result, soak drift, teardown report), `registry.json`
 and `snapshots/`.
 
-## Grafana
+## Live metrics endpoint
 
-`run` can also serve its metrics to Prometheus, live, for a Grafana dashboard. `monitoring/` holds
-a Prometheus + Grafana stack for your own machine, with the datasource and dashboard provisioned:
-
-```powershell
-docker compose -f monitoring/docker-compose.yml up -d     # once; keeps running
-# in .env (or the shell): LOADGEN_METRICS_PORT=9464
-.venv\Scripts\python -m vision_loadgen run --worker emotion --server-ip 10.10.10.22 --scenario latency
-```
-
-Open http://localhost:3000 (`admin` / `admin`, or `GRAFANA_ADMIN_PASSWORD`): the home dashboard is
-**vision-loadgen**. Pick the run in **Run** (newest first), or click a run id in the **Runs** table
-to jump to its time window; widen the time range to find older runs (Prometheus keeps 90 days,
-`PROMETHEUS_RETENTION`). Panels: synthetic cameras and publish rate; synthetic staleness p50/p95/max
-against the keep-up limit; consumer lag; real-camera staleness above baseline against the guard
-limit; worker health; staleness per GPU model copy and copies expected; stage verdicts and the
-throughput result. Stages are shaded on every graph.
-
-- The exporter is off unless `LOADGEN_METRICS_PORT` or `--metrics-port` is set, needs no extra
-  package (worker images included), and never fails a run: a busy port only logs a warning.
-  `LOADGEN_METRICS_ADDR` sets the bind address (default `0.0.0.0`). After the run it keeps serving
-  for 15 s (`output.metrics_linger_s`) so the verdicts get scraped.
-- Prometheus scrapes `host.docker.internal:9464` (this machine) every 5 s. To watch a run somewhere
-  else, e.g. beside a worker on a server, add its address to `monitoring/prometheus/targets/`
-  (picked up within 30 s, no restart) and publish the port:
-  `docker compose run --rm --no-deps -p 9464:9464 -e LOADGEN_METRICS_PORT=9464 <worker-service> python -m vision_loadgen run ...`.
-  For the standalone compose in `docker/`, use `docker compose run --rm --service-ports load-generator run ...`.
-- Windows may ask to allow Python through the firewall on the first run; allow it for private
-  networks, or set `LOADGEN_METRICS_ADDR=127.0.0.1` if Docker Desktop reaches it that way.
-- Metric names and labels are listed in `vision_loadgen/exporter.py` (`METRICS`); every series
-  carries `run_id`. Dashboard edits made in Grafana last until it restarts: export the JSON into
-  `monitoring/grafana/dashboards/vision-loadgen.json` to keep them.
+The web UI watches a run through a small metrics endpoint the run serves (Prometheus text format,
+stdlib only, so worker images need nothing extra). The UI turns it on for every run; on the
+command line it is off unless `--metrics-port N` (or `LOADGEN_METRICS_PORT`) is set. It listens on
+127.0.0.1 by default (`LOADGEN_METRICS_ADDR` to change), never fails a run (a busy port only logs a
+warning), and keeps serving for 15 s after the run (`output.metrics_linger_s`) so the final
+verdicts are read. Metric names and labels are listed in `vision_loadgen/exporter.py` (`METRICS`);
+every series carries `run_id`.
 
 ## Tests
 
