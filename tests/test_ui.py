@@ -204,7 +204,10 @@ def test_worker_log_commands(app, tmp_path):
     assert logs.command("emotion") == ["docker", "logs", "--follow", "--timestamps", "--tail", "300",
                                        "sentiment_analysis_backend"]
     assert {t["worker"]: t["container"] for t in logs.targets()} == {
-        "crowd": "crowd_monitoring_backend", "emotion": "sentiment_analysis_backend", "attendance": "frs_backend"}
+        "crowd": "crowd_monitoring_backend", "emotion": "sentiment_analysis_backend", "attendance": "frs_backend",
+        "ppe": "ppe_backend", "intrusion": "intrusion_backend", "fire_smoke": "fire_smoke_backend",
+        "obstacle": "obstacle_detection_backend", "productivity": "productivity_monitoring_backend",
+        "fall": "fall_detection_backend"}
     app.worker_logs.ssh_target, app.worker_logs.docker_command = "admin1@10.10.10.22", "sudo -n docker"
     assert logs.command("attendance") == [
         "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "admin1@10.10.10.22",

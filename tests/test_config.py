@@ -59,9 +59,12 @@ def test_invalid_scenarios_rejected(overrides):
 def test_presets_derive_databases_from_postgres_url():
     app = _app()
     assert app.environment == "production"
-    assert set(app.workers) == {"crowd", "emotion", "attendance"}
+    assert set(app.workers) == {"crowd", "emotion", "attendance", "ppe", "intrusion", "fire_smoke",
+                                "obstacle", "productivity", "fall"}
     assert app.worker_db_url("crowd") == "postgresql://u:p@pg:5432/crowd_gathering_db"
     assert app.worker_db_url("attendance") == "postgresql://u:p@pg:5432/frs_db"
+    assert app.worker_db_url("productivity") == "postgresql://u:p@pg:5432/productivity_monitoring_db"
+    assert app.worker_name("fire-smoke-detection") == "fire_smoke"
     assert app.main_db_url() == "postgresql://u:p@pg:5432/vision_main_db"
     assert app.workers["emotion"].group_prefix == "sentiment-analysis_consumer_group_"
     assert app.workers["crowd"].cameras_per_worker == 10 and app.workers["crowd"].vram_per_worker_mb == 1000

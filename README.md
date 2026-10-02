@@ -9,7 +9,9 @@ Design, assumptions and open items: [docs/load-generator-design.md](docs/load-ge
 Layout: `vision_loadgen/` is the package. `Dockerfile` builds the image; `docker/` (compose file,
 `.env.example`, example `--config` file), `docs/` and `tests/` are never installed.
 
-Presets exist for crowd monitoring, sentiment analysis (emotion) and AI attendance. Any worker
+Presets exist for crowd monitoring, sentiment analysis (emotion), AI attendance, PPE, intrusion,
+fire & smoke, obstacle, productivity monitoring and fall detection. The last six follow
+vision-module-backend's tables and are not yet tested against their workers. Any worker
 built on `vision_shared`'s `KafkaFramePipeline` can be added with a `--config` file (see
 `vision_loadgen/presets.py`).
 
@@ -188,7 +190,8 @@ python -m vision_loadgen ui [--port 8765]
 `vision-loadgen` is the same CLI when installed with pip.
 
 - `--scenario`: `throughput`, `latency`, `soak`, or a scenario file (YAML or JSON).
-- `--worker`: preset name (`crowd`, `emotion`, `attendance`) or function key (`crowd-monitoring`), not
+- `--worker`: preset name (`crowd`, `emotion`, `attendance`, `ppe`, `intrusion`, `fire_smoke`, `obstacle`,
+  `productivity`, `fall`) or function key (`crowd-monitoring`), not
   a container name; the worker's URL comes from `vision_main_db`. Default: the worker it runs beside.
 - `--template-camera`: the real camera to copy; default: the worker's freshest live camera.
 - `--server-ip`: pick a deployment when a module runs on several servers.
