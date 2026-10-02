@@ -211,7 +211,13 @@ def test_worker_log_commands(app, tmp_path):
     app.worker_logs.ssh_target, app.worker_logs.docker_command = "admin1@10.10.10.22", "sudo -n docker"
     assert logs.command("attendance") == [
         "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "admin1@10.10.10.22",
-        "sudo", "-n", "docker", "logs", "--follow", "--timestamps", "--tail", "300", "frs_backend"]
+        "sudo -n docker logs --follow --timestamps --tail 300 frs_backend"]
+    app.worker_logs.password = "s3cret"
+    argv = logs.command("attendance")
+    assert argv == [sys.executable, "-m", "vision_loadgen.ssh_follow", "admin1@10.10.10.22",
+                    "sudo", "-S", "-p", "", "docker", "logs", "--follow", "--timestamps", "--tail", "300", "frs_backend"]
+    assert "s3cret" not in " ".join(argv) and "s3cret" not in repr(app.worker_logs)
+    app.worker_logs.password = ""
     for change in ({"ssh_target": "admin1@host; rm -rf /"}, {"docker_command": "docker; reboot"}):
         for key, value in change.items():
             setattr(app.worker_logs, key, value)

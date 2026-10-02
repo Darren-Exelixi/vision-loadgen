@@ -57,6 +57,9 @@ WORKER_PRESETS: dict[str, dict] = {
     "attendance": {
         "function_key": "ai-attendance",
         "container": "frs_backend",
+        "worker_api": "attendance",
+        # Recognition only matches employees of departments linked to the camera's region.
+        "copy_department_links": True,
         "database_name": "frs_db",
         "db_url": "${ATTENDANCE_DATABASE_URL}",
         "settings": {"table": "frs_settings", "camera_columns": ["check_in_cameras"]},
@@ -71,7 +74,8 @@ WORKER_PRESETS: dict[str, dict] = {
             "events_camera_column": "camera_id",
             "events_time_column": "created_at",
         },
-        "note": "Worker not reviewed locally; confirm it exposes /api/v1/worker/sync and /worker/status.",
+        "note": "Cameras show as active only once frames are processed; the template camera's region "
+                "needs departments for recognitions to happen.",
     },
     # Tables below follow vision-module-backend's models for each module; the workers themselves
     # were not reviewed locally, so the sync/status contract is unconfirmed for all of them.
@@ -94,7 +98,8 @@ WORKER_PRESETS: dict[str, dict] = {
         "db_url": "${INTRUSION_DATABASE_URL}",
         "settings": {"table": "intrusion_settings", "camera_columns": ["selected_cameras"], "enabled_where": "is_enabled = TRUE"},
         "camera_rows": [{"table": "intrusion_camera_zones"}],
-        "purge": [{"table": "intrusion_events", "file_columns": ["image_path", "video_path"]}],
+        # intrusion_events has no camera_id; it keeps the camera id in camera_name.
+        "purge": [{"table": "intrusion_events", "camera_column": "camera_name", "file_columns": ["image_path", "video_path"]}],
         "note": "Worker not reviewed locally; confirm it exposes /api/v1/worker/sync and /worker/status.",
     },
     "fire_smoke": {

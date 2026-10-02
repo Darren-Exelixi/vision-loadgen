@@ -85,3 +85,14 @@ def test_delete_files_and_sweep_camera_folders(tmp_path):
     assert sweep_camera_folders(str(events / "crowd-monitoring"), ["syn-1"]) == 1
     assert not synthetic.parent.exists() and (real / "a.jpg").exists()
     assert sweep_camera_folders(str(events / "nope"), ["syn-1"]) == 0
+
+
+def test_container_event_path_stays_inside_the_events_dir():
+    from vision_loadgen.media import container_event_path
+    root = "/app/events"
+    assert container_event_path(root, "ai-attendance/attendance_images/2026-08-21/10-57-08-036_002_time_in.jpg") == \
+        "/app/events/ai-attendance/attendance_images/2026-08-21/10-57-08-036_002_time_in.jpg"
+    assert container_event_path(root, "/app/events/x/a.jpg") == "/app/events/x/a.jpg"
+    for bad in ("", "../etc/passwd", "a/../../etc", "/etc/passwd", "/app/events", "/app/eventsX/a.jpg",
+                "a\\b.jpg", "a\x08.jpg", "a\n.jpg"):
+        assert container_event_path(root, bad) is None, bad

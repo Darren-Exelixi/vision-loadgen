@@ -1,7 +1,11 @@
 """A stand-in GPU worker with the real contract: service-JWT /worker/sync and /worker/status, a fresh
 timestamped consumer group per (re)start, camera filtering by region assignment + settings row,
 GpuInferenceEngine's refusal to start when the cameras need more model copies than fit in VRAM, and
-its own Prometheus metrics (per-stage time histogram, frames per camera) like the emotion worker's."""
+its own Prometheus metrics (per-stage time histogram, frames per camera) like the emotion worker's.
+
+api="attendance" mimics face-attendance-backend instead: POST /worker/sync needs {module_name,
+server_function_id} and runs as a job (GET /worker/sync/status), and cameras are only listed by
+GET /streaming/processed/list once their frames were processed."""
 
 from __future__ import annotations
 
@@ -21,8 +25,11 @@ class FakeWorker:
     def __init__(self, function_key: str, main_url: str, module_url: str, settings_table: str, camera_column: str,
                  bootstrap: str, topic: str, secret: str,
                  on_frame: Optional[Callable[[str, dict], None]] = None,
-                 max_cameras: Optional[int] = None) -> None:
+                 max_cameras: Optional[int] = None, api: str = "standard") -> None:
         self.function_key = function_key
+        self.api = api
+        self.sync_jobs: list[dict] = []
+        self.sync_bodies: list[dict] = []
         self.main_url = main_url
         self.module_url = module_url
         self.settings_table = settings_table
@@ -96,6 +103,32 @@ class FakeWorker:
                 },
             }
 
+    def processed_list(self) -> dict:
+        with self._lock:
+            cameras = sorted(camera for camera in self.processed if camera in self.active)
+            return {"status": "success", "cameras": [{"camera_id": camera} for camera in cameras],
+                    "count": len(cameras),
+                    "buffer_info": {camera: {"has_frame": True, "timestamp": self.processed[camera]} for camera in cameras},
+                    "diagnostics": {"kafka_consumer_running": self.running}}
+
+    def sync_status(self) -> dict:
+        with self._lock:
+            current = next((job for job in self.sync_jobs if job["status"] == "running"), None)
+            done = [job for job in self.sync_jobs if job["status"] != "running"]
+            return {"current": current, "last": done[-1] if done else None, "pending": None}
+
+    def _sync_job(self, job: dict) -> None:
+        time.sleep(0.3)  # the real job rebuilds face enrollments for a few seconds
+        try:
+            self.refresh()
+            status = "completed"
+        except RuntimeError:
+            status = "failed"
+        with self._lock:
+            job.update(status=status, phase=status,
+                       source_diagnostics={"assigned_camera_count": len(self.active), "mapped_camera_count": len(self.active),
+                                           "unmapped_camera_count": 0})
+
     def metrics(self) -> str:
         with self._lock:
             frames = dict(self.frames_processed)
@@ -165,6 +198,12 @@ class FakeWorker:
                     return self._reply(401, {"detail": "Invalid service token"})
                 if worker.unresponsive:
                     return self._reply(503, {"detail": "busy"})
+                if worker.api == "attendance":
+                    if self.path == "/api/v1/streaming/processed/list":
+                        return self._reply(200, worker.processed_list())
+                    if self.path == "/api/v1/worker/sync/status":
+                        return self._reply(200, worker.sync_status())
+                    return self._reply(404, {"detail": "Not Found"})
                 if self.path == "/api/v1/worker/status":
                     return self._reply(200, {"success": True, "data": worker.status()})
                 if self.path == "/api/v1/metrics":
@@ -179,9 +218,20 @@ class FakeWorker:
 
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(length)
+                raw = self.rfile.read(length)
                 if not self._authorised():
                     return self._reply(401, {"detail": "Invalid service token"})
+                if worker.api == "attendance" and self.path == "/api/v1/worker/sync":
+                    body = json.loads(raw or b"{}")
+                    missing = [key for key in ("module_name", "server_function_id") if not body.get(key)]
+                    if missing:
+                        return self._reply(422, {"detail": [{"type": "missing", "loc": ["body", key]} for key in missing]})
+                    job = {"job_id": f"job-{len(worker.sync_jobs) + 1}", "status": "running", "phase": "fetching", **body}
+                    with worker._lock:
+                        worker.sync_bodies.append(body)
+                        worker.sync_jobs.append(job)
+                    threading.Thread(target=worker._sync_job, args=(job,), daemon=True).start()
+                    return self._reply(202, {"status": "accepted", "job_id": job["job_id"]})
                 if self.path == "/api/v1/worker/sync":
                     try:
                         worker.refresh()

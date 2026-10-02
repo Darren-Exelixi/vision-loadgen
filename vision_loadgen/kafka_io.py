@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer, TopicPartition
 
@@ -60,6 +62,90 @@ class FrameProducer:
         with self._lock:
             self._stats.errors += 1
             self._stats.last_error = str(exc)
+
+
+def _producer(kafka: KafkaConfig) -> KafkaProducer:
+    return KafkaProducer(
+        bootstrap_servers=kafka.bootstrap_servers,
+        value_serializer=lambda value: json.dumps(value).encode("utf-8"),
+        key_serializer=lambda key: key.encode("utf-8"),
+        acks=1,
+        retries=3,
+    )
+
+
+class TopicWaker:
+    """Keeps messages arriving on the frame topic while a worker syncs.
+
+    vision_shared's KafkaFramePipeline (vision-shared-base <= 1.0.6) only sees its stop flag when a
+    message arrives. On a quiet topic its consumer thread outlives stop(), the next start() sets the
+    flag again, and the old thread keeps consuming beside the new one: every frame is processed
+    twice. Any message while the pipeline is stopped lets the old thread exit. These messages have
+    the shape of a synthetic frame but name a camera no worker has enabled, so workers drop them
+    before reading the image.
+    """
+
+    def __init__(self, kafka: KafkaConfig, make_message: Callable[[float], Optional[dict]],
+                 producer_factory: Callable[[KafkaConfig], Any] = _producer) -> None:
+        self._kafka = kafka
+        self._make_message = make_message
+        self._producer_factory = producer_factory
+        self._producer: Any = None
+        self.sent = 0
+
+    @contextmanager
+    def during(self, label: str) -> Iterator[None]:
+        stop = threading.Event()
+        thread = self._start(label, stop)
+        try:
+            yield
+        finally:
+            if thread is not None:
+                stop.set()
+                thread.join(timeout=5)
+                try:
+                    self._producer.flush(timeout=5)
+                except Exception as exc:
+                    log.debug("Wake message flush failed: %s", exc)
+
+    def close(self) -> None:
+        if self._producer is None:
+            return
+        try:
+            self._producer.close(timeout=5)
+        except Exception as exc:
+            log.debug("Wake producer close failed: %s", exc)
+        self._producer = None
+
+    def _start(self, label: str, stop: threading.Event) -> Optional[threading.Thread]:
+        """Never raises: a sync must not fail because the waker could not run."""
+        if not self._kafka.wake_during_sync:
+            return None
+        if self._make_message(time.time()) is None:
+            log.warning("No source frame to build wake messages from; %s runs on a quiet topic", label)
+            return None
+        try:
+            if self._producer is None:
+                self._producer = self._producer_factory(self._kafka)
+        except Exception as exc:
+            log.warning("Wake messages unavailable for %s: %s", label, exc)
+            return None
+        thread = threading.Thread(target=self._loop, args=(label, stop), name="loadgen-topic-waker", daemon=True)
+        thread.start()
+        return thread
+
+    def _loop(self, label: str, stop: threading.Event) -> None:
+        failed = False
+        while not stop.is_set():
+            message = self._make_message(time.time())
+            try:
+                self._producer.send(self._kafka.topic, key=message["camera_id"], value=message)
+                self.sent += 1
+            except Exception as exc:
+                if not failed:
+                    log.warning("Wake message for %s failed: %s", label, exc)
+                    failed = True
+            stop.wait(self._kafka.wake_interval_s)
 
 
 class TopicTap:

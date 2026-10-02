@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-from vision_loadgen import db, media
+from vision_loadgen import db, dockerhost, media
 from vision_loadgen.config import AppConfig, ConfigError, PurgeTarget
+from vision_loadgen.frames import build_message
+from vision_loadgen.kafka_io import TopicWaker
 from vision_loadgen.registry import Assignment, CameraRows, Registry, SettingsEdit, Snapshot
 from vision_loadgen.workers import Deployment, WorkerClient, WorkerStatus, resolve_deployment
 
@@ -19,6 +22,10 @@ log = logging.getLogger(__name__)
 CAMERAS = "cameras"
 REGIONS = "camera_regions"
 ASSIGNMENTS = "function_camera_regions"
+DEPARTMENT_LINKS = "department_camera_regions"
+# Teardown removes folders named after these inside worker containers; keep both strict.
+CAMERA_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{7,63}$")
+CONTAINER_PATH = re.compile(r"^(/[A-Za-z0-9_][A-Za-z0-9_.\-]*){2,}$")  # no "..", at least two levels
 
 
 def _returned_key(cur, what: str) -> str:
@@ -43,6 +50,36 @@ class Registrar:
         self.clients: dict[str, WorkerClient] = {}
         self._template: dict[str, Any] = {}
         self._settings_rows: dict[str, str] = {}
+        self._waker: Optional[TopicWaker] = None
+
+    # ------------------------------------------------------------- wake messages
+
+    def set_wake_frame(self, frame: Optional[dict]) -> None:
+        """Remember a source frame so syncs can keep the topic busy (see kafka_io.TopicWaker)."""
+        path = (frame or {}).get("image_path")
+        if path and path != self.registry.wake_image_path:
+            self.registry.wake_image_path = path
+            self.registry.save()
+
+    def _wake_message(self, now: float) -> Optional[dict]:
+        if not self.registry.wake_image_path:
+            return None
+        run_id = self.registry.run_id
+        message = build_message({"image_path": self.registry.wake_image_path}, f"loadgen-wake-{run_id}", now,
+                                run_id, self.app.frames, passthrough_dates=False)
+        message["wake"] = True
+        return message
+
+    def _sync(self, name: str, client: WorkerClient) -> WorkerStatus:
+        if self._waker is None:
+            self._waker = TopicWaker(self.app.kafka, self._wake_message)
+        with self._waker.during(f"{name} sync"):
+            return client.sync()
+
+    def close_waker(self) -> None:
+        if self._waker is not None:
+            self._waker.close()
+            self._waker = None
 
     # ------------------------------------------------------------------ setup
 
@@ -134,6 +171,8 @@ class Registrar:
         main = db.connect(self.app.main_db_url())
         try:
             self._create_region(main, self._template["region_id"])
+            if any(self._worker(name).copy_department_links for name in self.worker_names):
+                self._copy_department_links(main, self._template["region_id"])
             self._assign_region(main, deployments)
             self._create_cameras(main, self._template["id"], camera_count)
         finally:
@@ -178,6 +217,44 @@ class Registrar:
         self.registry.region_id = region_id
         self.registry.save()
         log.info("Created region %s", region_id)
+
+    def _copy_department_links(self, conn, template_region_id: str) -> None:
+        """Link the synthetic region to the template region's departments (AI attendance scopes
+        recognition to employees of those departments). Teardown removes them by region id."""
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (DEPARTMENT_LINKS,))
+            if not cur.fetchone()["present"]:
+                log.warning("No %s table in vision-main; department links not copied", DEPARTMENT_LINKS)
+                return
+            extra = ", created_by" if "created_by" in db.column_names(db.table_columns(cur, DEPARTMENT_LINKS)) else ""
+            cur.execute(
+                f"INSERT INTO {DEPARTMENT_LINKS} (department_id, camera_region_id{extra}) "
+                f"SELECT department_id, %s::uuid{extra} FROM {DEPARTMENT_LINKS} "
+                "WHERE camera_region_id = %s::uuid ON CONFLICT DO NOTHING",
+                (self.registry.region_id, template_region_id),
+            )
+            copied = cur.rowcount
+        conn.commit()
+        if copied:
+            log.info("Linked the synthetic region to %d departments of the template region", copied)
+        else:
+            log.warning("Template camera's region has no departments; attendance will not recognise anyone "
+                        "on the synthetic cameras")
+
+    @staticmethod
+    def _remove_department_links(url: str, region_id: str) -> str:
+        conn = db.connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (DEPARTMENT_LINKS,))
+                if not cur.fetchone()["present"]:
+                    return "skipped: no table"
+                cur.execute(f"DELETE FROM {DEPARTMENT_LINKS} WHERE camera_region_id = %s::uuid", (region_id,))
+                deleted = cur.rowcount
+            conn.commit()
+            return f"{deleted} deleted"
+        finally:
+            conn.close()
 
     def _assign_region(self, conn, deployments: dict[str, Deployment]) -> None:
         for name, deployment in deployments.items():
@@ -308,12 +385,18 @@ class Registrar:
         statuses: dict[str, WorkerStatus] = {}
         for name, client in self.clients.items():
             try:
-                client.sync()
+                self._sync(name, client)
             except Exception as exc:
                 raise RuntimeError(
                     f"{name} failed to sync with {len(expected)} synthetic cameras ({exc}). If its log says "
                     "'Insufficient GPU VRAM', lower the camera count or set gpu_free_vram_mb so the run is capped."
                 ) from exc
+            if not client.lists_enabled_cameras:
+                # This worker lists a camera only after processing its frames; the run's first-frame
+                # and staleness checks catch synthetic cameras it never picks up.
+                statuses[name] = client.status()
+                log.info("%s synced; its %d synthetic cameras are confirmed once frames flow", name, len(expected))
+                continue
             deadline = time.monotonic() + self.app.registration.sync_timeout_s
             while True:
                 status = client.status()
@@ -357,7 +440,8 @@ class Registrar:
             step(f"settings:{edit.worker}", lambda edit=edit: self._edit_settings(
                 edit.worker, edit.table, edit.key_column, edit.key, edit.columns, add=False, ids=ids))
         for name in self.registry.workers:
-            step(f"sync:{name}", lambda name=name: self._client_for(name).sync() and "synced")
+            step(f"sync:{name}", lambda name=name: self._sync(name, self._client_for(name)) and "synced")
+        self.close_waker()
         for rows in self.registry.camera_rows:
             step(f"camera_rows:{rows.table}", lambda rows=rows: self._delete_rows(
                 self.app.worker_db_url(rows.worker), rows.table, rows.camera_column, ids))
@@ -373,7 +457,8 @@ class Registrar:
             for name in self.worker_names:
                 for target in self._worker(name).purge:
                     url = self.app.main_db_url() if target.db == "main" else self.app.worker_db_url(name)
-                    step(f"purge:{target.table}", lambda url=url, target=target: self._purge_events(url, target, ids))
+                    step(f"purge:{target.table}",
+                         lambda name=name, url=url, target=target: self._purge_events(name, url, target, ids))
                 step(f"event_folders:{name}", lambda name=name: self._sweep_event_folders(name, ids))
 
         for worker, plan in restore_plans.items():
@@ -388,6 +473,7 @@ class Registrar:
                 main_url, assignment.table, [assignment.key]))
         step("cameras", lambda: self._remove_main(main_url, CAMERAS, ids))
         if self.registry.region_id:
+            step("department_links", lambda: self._remove_department_links(main_url, self.registry.region_id))
             step("region", lambda: self._remove_main(main_url, REGIONS, [self.registry.region_id]))
 
         self.registry.teardown = report
@@ -469,29 +555,85 @@ class Registrar:
         row = cur.fetchone()
         return row["key"] if row else None
 
-    def _purge_events(self, url: str, target: PurgeTarget, ids: list[str]) -> dict[str, Any]:
-        """Delete event rows, then the image/video files they point at (only inside EVENTS_DIR)."""
+    def _purge_events(self, worker: str, url: str, target: PurgeTarget, ids: list[str]) -> dict[str, Any]:
+        """Delete event rows, then the image/video files they point at (only inside EVENTS_DIR).
+
+        The paths are saved in the registry before the rows go, so a retried cleanup still has them.
+        """
+        key = f"{worker}:{target.table}"
         conn = db.connect(url)
         try:
             with conn.cursor() as cur:
                 paths = db.select_values(cur, target.table, target.camera_column, ids, target.file_columns)
+                if paths:
+                    saved = self.registry.event_files.get(key, [])
+                    known = set(saved)
+                    self.registry.event_files[key] = saved + [path for path in paths if path not in known]
+                    self.registry.save()
                 deleted = db.delete_by_values(cur, target.table, target.camera_column, ids)
             conn.commit()
         finally:
             conn.close()
         result: dict[str, Any] = {"rows_deleted": deleted}
         if target.file_columns:
-            if self._events_dir_available():
-                result.update(media.delete_files(self.app.events.dir, paths))
-            else:
-                result["files"] = f"skipped: EVENTS_DIR not available here ({len(paths)} paths)"
+            result.update(self._delete_event_files(worker, self.registry.event_files.get(key, [])))
         return result
 
+    def _delete_event_files(self, worker: str, paths: list[str]) -> dict[str, Any]:
+        if self._events_dir_available():
+            return media.delete_files(self.app.events.dir, paths)
+        container = self._worker(worker).container
+        if not (self.app.worker_logs.ssh_target and container):
+            return {"files": f"skipped: EVENTS_DIR not available here ({len(paths)} paths)"}
+        root = self.app.events.container_dir
+        resolved = [media.container_event_path(root, path) for path in paths]
+        targets = sorted({path for path in resolved if path})
+        cfg = self.app.worker_logs
+        for start in range(0, len(targets), 200):
+            remote = [*dockerhost.docker_command(cfg), "exec", dockerhost.check_container(container),
+                      "rm", "-f", "--", *targets[start:start + 200]]
+            result = dockerhost.run(cfg, remote)
+            if result.returncode != 0:
+                output = ((result.stdout or b"") + (result.stderr or b"")).decode("utf-8", errors="replace")
+                raise RuntimeError(f"docker exec {container} rm failed ({result.returncode}): {output.strip()[-300:]}")
+        # rm -f does not say which files existed, so this counts the paths removed or already gone.
+        return {"files_removed_in_container": len(targets), "paths_outside_events_dir": len(paths) - len(
+            [path for path in resolved if path])}
+
     def _sweep_event_folders(self, worker: str, ids: list[str]) -> str:
-        if not self._events_dir_available():
-            return "skipped: EVENTS_DIR not available here"
-        folder = Path(self.app.events.dir) / self._worker(worker).events_folder
-        return f"{media.sweep_camera_folders(str(folder), ids)} camera folders removed from {folder}"
+        if self._events_dir_available():
+            folder = Path(self.app.events.dir) / self._worker(worker).events_folder
+            return f"{media.sweep_camera_folders(str(folder), ids)} camera folders removed from {folder}"
+        container = self._worker(worker).container
+        if self.app.worker_logs.ssh_target and container:
+            return self._sweep_event_folders_in_container(container, self._worker(worker).events_folder, ids)
+        return "skipped: EVENTS_DIR not available here (set LOADGEN_WORKER_LOGS_SSH to clean them on the Docker host)"
+
+    def _sweep_event_folders_in_container(self, container: str, events_folder: str, ids: list[str]) -> str:
+        """Remove the synthetic cameras' folders (workers keep event media under .../<camera_id>/...)."""
+        if not ids:
+            return "0 camera folders removed (no cameras)"
+        root = f"{self.app.events.container_dir.rstrip('/')}/{events_folder}"
+        if not CONTAINER_PATH.match(root) or not all(CAMERA_ID.match(camera_id) for camera_id in ids):
+            raise ValueError(f"Refusing to sweep {root!r}: unexpected folder or camera id")
+        cfg = self.app.worker_logs
+        removed = 0
+        for start in range(0, len(ids), 200):
+            names: list[str] = []
+            for camera_id in ids[start:start + 200]:
+                names += ["-o", "-name", camera_id] if names else ["-name", camera_id]
+            remote = [*dockerhost.docker_command(cfg), "exec", dockerhost.check_container(container),
+                      "find", root, "-mindepth", "1", "-maxdepth", str(media.SWEEP_DEPTH), "-type", "d",
+                      "(", *names, ")", "-prune", "-print", "-exec", "rm", "-rf", "{}", "+"]
+            result = dockerhost.run(cfg, remote)
+            output = (result.stdout or b"").decode("utf-8", errors="replace")
+            errors = (result.stderr or b"").decode("utf-8", errors="replace")
+            if result.returncode != 0:
+                if "No such file or directory" in output + errors and root in output + errors:
+                    return f"0 camera folders removed ({root} does not exist in {container})"
+                raise RuntimeError(f"docker exec {container} find failed ({result.returncode}): {(output + errors).strip()[-300:]}")
+            removed += sum(1 for line in output.splitlines() if line.startswith(root + "/"))
+        return f"{removed} camera folders removed from {container}:{root}"
 
     def _events_dir_available(self) -> bool:
         return bool(self.app.events.dir) and Path(self.app.events.dir).is_dir()
@@ -521,7 +663,9 @@ class Registrar:
         return self.app.workers[name]
 
     def _client(self, name: str, base_url: str) -> WorkerClient:
-        return WorkerClient(name, base_url, self._worker(name).api_prefix, self.app.auth)
+        server_function_id = (self.registry.workers.get(name) or {}).get("server_function_id", "")
+        return WorkerClient.for_worker(name, self._worker(name), base_url, server_function_id, self.app.auth,
+                                       self.app.registration.sync_timeout_s)
 
     def _client_for(self, name: str) -> WorkerClient:
         if name not in self.clients:

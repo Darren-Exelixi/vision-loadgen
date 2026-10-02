@@ -58,6 +58,12 @@ class Registry:
     camera_rows: list[CameraRows] = field(default_factory=list)
     snapshots: list[Snapshot] = field(default_factory=list)
     workers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Event image/video paths read before their rows were purged ("<worker>:<table>" -> paths), so a
+    # retried cleanup can still delete files the rows no longer point at.
+    event_files: dict[str, list[str]] = field(default_factory=dict)
+    # A source frame's image_path for the wake messages sent while workers sync; kept so a later
+    # `cleanup --run-id` can send them too.
+    wake_image_path: str = ""
     teardown: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

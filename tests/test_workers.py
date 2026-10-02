@@ -58,3 +58,90 @@ def test_load_env_file_defaults_to_dot_env_in_cwd(tmp_path, monkeypatch):
     environ: dict[str, str] = {}
     assert load_env_file(None, environ) is not None
     assert environ["TIMEZONE"] == "Asia/Dubai"
+
+
+def _attendance_client(responses, calls):
+    """An attendance WorkerClient whose HTTP calls replay `responses[(method, path)]` in order."""
+    client = WorkerClient("attendance", "http://w:7021", "/api/v1", auth=None, api="attendance",
+                          function_key="ai-attendance", server_function_id="sf-1", sync_timeout_s=5, poll_s=0)
+
+    def fake_call(method, path, timeout_s, body=None):
+        calls.append((method, path, body))
+        queue = responses[(method, path)]
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    client._call = fake_call
+    return client
+
+
+PROCESSED = {"status": "success", "cameras": [{"camera_id": "cam-a"}, "cam-b"],
+             "buffer_info": {"cam-a": {"has_frame": True, "timestamp": 100.5}, "cam-b": {"last_timestamp": 99.0}},
+             "diagnostics": {"kafka_consumer_running": True}}
+
+
+def test_attendance_sync_posts_its_body_and_waits_for_the_new_job():
+    old = {"job_id": "old", "status": "completed"}
+    new = {"job_id": "job-2", "status": "completed", "phase": "completed", "duration_seconds": 5.8,
+           "source_diagnostics": {"assigned_camera_count": 4, "mapped_camera_count": 4, "unmapped_camera_count": 0}}
+    calls = []
+    client = _attendance_client({
+        ("GET", "/worker/sync/status"): [
+            {"current": None, "last": old, "pending": None},                          # before the POST
+            {"current": {"job_id": "job-2", "status": "running"}, "last": old, "pending": None},
+            {"current": None, "last": new, "pending": None},
+        ],
+        ("POST", "/worker/sync"): [{"status": "accepted", "job_id": "job-2"}],
+        ("GET", "/streaming/processed/list"): [PROCESSED],
+    }, calls)
+    status = client.sync()
+    assert ("POST", "/worker/sync", {"module_name": "ai-attendance", "server_function_id": "sf-1"}) in calls
+    assert [c[1] for c in calls].count("/worker/sync/status") == 3
+    assert status.running and status.active_cameras == {"cam-a", "cam-b"}
+    assert status.processed_timestamps == {"cam-a": 100.5, "cam-b": 99.0}
+    assert not client.lists_enabled_cameras
+
+
+def test_attendance_sync_without_a_job_id_waits_for_a_different_last_job():
+    calls = []
+    client = _attendance_client({
+        ("GET", "/worker/sync/status"): [
+            {"current": None, "last": {"job_id": "old", "status": "completed"}, "pending": None},
+            {"current": None, "last": {"job_id": "old", "status": "completed"}, "pending": None},
+            {"current": None, "last": {"job_id": "new", "status": "completed"}, "pending": None},
+        ],
+        ("POST", "/worker/sync"): [{"status": "accepted"}],
+        ("GET", "/streaming/processed/list"): [PROCESSED],
+    }, calls)
+    client.sync()
+    assert [c[1] for c in calls].count("/worker/sync/status") == 3
+
+
+def test_attendance_sync_failures_raise():
+    failed = {"job_id": "job-2", "status": "failed", "phase": "milvus_rebuild", "error": "milvus down"}
+    client = _attendance_client({
+        ("GET", "/worker/sync/status"): [{"current": None, "last": None, "pending": None},
+                                         {"current": None, "last": failed, "pending": None}],
+        ("POST", "/worker/sync"): [{"job_id": "job-2"}],
+    }, [])
+    with pytest.raises(RuntimeError, match="failed.*milvus down"):
+        client.sync()
+
+    stuck = _attendance_client({
+        ("GET", "/worker/sync/status"): [{"current": {"job_id": "job-2"}, "last": None, "pending": None}],
+        ("POST", "/worker/sync"): [{"job_id": "job-2"}],
+    }, [])
+    stuck._sync_timeout_s = 0
+    with pytest.raises(TimeoutError):
+        stuck.sync()
+
+    with pytest.raises(ConfigError):
+        WorkerClient("attendance", "http://w:1", "/api/v1", auth=None, api="attendance").sync()
+
+
+def test_standard_status_still_requires_has_frame():
+    from vision_loadgen.workers import parse_status
+    status = parse_status({"running": True, "active_cameras": ["a", "b"],
+                           "processed_buffer_info": {"a": {"has_frame": True, "timestamp": 1.0},
+                                                     "b": {"timestamp": 2.0}}})
+    assert status.processed_timestamps == {"a": 1.0}
+    assert WorkerClient("crowd", "http://w:1", "/api/v1", auth=None).lists_enabled_cameras

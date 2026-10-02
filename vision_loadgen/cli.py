@@ -236,13 +236,14 @@ def _check(app: AppConfig, args) -> int:
                     except ConfigError as exc:
                         fail(str(exc))
                         continue
-                    client = WorkerClient(name, deployment.base_url, worker.api_prefix, app.auth)
+                    client = WorkerClient.for_worker(name, worker, deployment.base_url, deployment.server_function_id,
+                                                     app.auth, app.registration.sync_timeout_s)
                     try:
                         status = client.status()
                         clients[name] = client
                         real_cameras[name] = len(status.active_cameras)
-                        ok(f"{name}: status reachable, running={status.running}, "
-                           f"{len(status.active_cameras)} active cameras")
+                        what = "active cameras" if client.lists_enabled_cameras else "cameras with processed frames"
+                        ok(f"{name}: status reachable, running={status.running}, {len(status.active_cameras)} {what}")
                         _report_clock(name, client, ok, warn)
                         _report_stage_times(name, client, worker.metrics, ok, warn)
                     except Exception as exc:
@@ -291,8 +292,17 @@ def _check(app: AppConfig, args) -> int:
 
     if app.events.dir and Path(app.events.dir).is_dir():
         ok(f"events dir {app.events.dir} is mounted; event files will be cleaned")
+    elif app.worker_logs.ssh_target:
+        missing = [name for name in scenario.workers if not app.workers[name].container]
+        message = (f"event files will be cleaned inside the worker containers ({app.events.container_dir}) "
+                   f"over ssh to {app.worker_logs.ssh_target}")
+        if missing:
+            warn(f"{message}, except {', '.join(missing)} (no container configured)")
+        else:
+            ok(message)
     else:
-        warn(f"events dir '{app.events.dir or 'unset'}' not available here; event files will not be cleaned")
+        warn(f"events dir '{app.events.dir or 'unset'}' not available here and LOADGEN_WORKER_LOGS_SSH unset; "
+             "event files will not be cleaned")
 
     try:
         reader = LagReader(app.kafka)

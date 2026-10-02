@@ -544,7 +544,7 @@ async function pollLogs() {
     } else {
       logs.following = false;
       $("logStopBtn").disabled = true;
-      $("logStatus").textContent = `Stopped (exit ${data.returncode ?? "?"}). An ssh error above usually means key login is not set up; see README "Worker logs".`;
+      $("logStatus").textContent = `Stopped (exit ${data.returncode ?? "?"}). An ssh error above usually means key login is not set up or LOADGEN_WORKER_LOGS_PASSWORD is wrong; see README "Worker logs".`;
     }
   } catch (error) {
     logs.following = false;

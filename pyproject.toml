@@ -23,7 +23,9 @@ dependencies = [
 standalone = ["PyYAML>=6.0", "tzdata>=2024.1"]
 # `corpus from-video` only; worker images already have OpenCV.
 video = ["opencv-python-headless>=4.8"]
-dev = ["PyYAML>=6.0", "pytest>=8.0", "opencv-python-headless>=4.8"]
+# Worker logs tab with password login (LOADGEN_WORKER_LOGS_PASSWORD) instead of ssh keys.
+ssh = ["paramiko>=3.4"]
+dev = ["PyYAML>=6.0", "pytest>=8.0", "opencv-python-headless>=4.8", "paramiko>=3.4"]
 
 [project.scripts]
 vision-loadgen = "vision_loadgen.cli:main"

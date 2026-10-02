@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
+from vision_loadgen import dockerhost
 from vision_loadgen.config import AppConfig, ConfigError
 from vision_loadgen.exporter import METRICS, parse_exposition
 from vision_loadgen.sources import HEADER_NAME, MANIFEST_NAME, read_corpus_header
@@ -51,9 +52,6 @@ RUN_STARTED = re.compile(r"Run (\d{8}-\d{6}-[0-9a-f]{4}):")
 FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,120}\.(mp4|avi|mov|mkv|webm|m4v)$", re.IGNORECASE)
 SCENARIOS = ("latency", "throughput", "soak")
 SIZINGS = ("fixed", "per_stage")
-CONTAINER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$")
-SSH_TARGET = re.compile(r"^[A-Za-z0-9_.\-]+@[A-Za-z0-9.\-]+$")
-DOCKER_WORD = re.compile(r"^[A-Za-z0-9_./\-]+$")
 EXCLUSIVE = {"run", "cleanup"}  # change what is registered; one at a time
 
 
@@ -368,19 +366,12 @@ class WorkerLogs:
         container = self.app.workers[worker].container if worker in self.app.workers else ""
         if not container:
             raise BadRequest(f"No container configured for worker {worker!r} (set workers.{worker}.container)")
-        if not CONTAINER.match(container):
-            raise BadRequest(f"Invalid container name {container!r}")
-        docker = cfg.docker_command.split()
-        if not docker or not all(DOCKER_WORD.match(word) for word in docker):
-            raise BadRequest(f"Invalid worker_logs.docker_command {cfg.docker_command!r}")
-        remote = [*docker, "logs", "--follow", "--timestamps", "--tail", str(cfg.tail), container]
-        if not cfg.ssh_target:
-            return remote
-        if not SSH_TARGET.match(cfg.ssh_target):
-            raise BadRequest(f"Invalid worker_logs.ssh_target {cfg.ssh_target!r} (expected user@host)")
-        # BatchMode: fail at once without key login instead of waiting on a password prompt nobody sees.
-        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
-                cfg.ssh_target, *remote]
+        try:
+            remote = [*dockerhost.docker_command(cfg), "logs", "--follow", "--timestamps", "--tail", str(cfg.tail),
+                      dockerhost.check_container(container)]
+            return dockerhost.argv(cfg, remote)
+        except dockerhost.DockerHostError as exc:
+            raise BadRequest(str(exc))
 
     def start(self, worker: str) -> LogFollow:
         argv = self.command(worker)
@@ -393,9 +384,10 @@ class WorkerLogs:
             log_path = self.log_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{worker}.log"
             handle = log_path.open("wb")
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            env = dockerhost.env(self.app.worker_logs)
             try:
                 process = subprocess.Popen(argv, stdout=handle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                           creationflags=flags, start_new_session=os.name != "nt")
+                                           creationflags=flags, start_new_session=os.name != "nt", env=env)
             except OSError as exc:
                 raise BadRequest(f"Cannot start {argv[0]}: {exc}")
             finally:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import shutil
 from pathlib import Path
 from typing import Iterable
@@ -28,6 +29,17 @@ def resolve_event_path(events_dir: Path, value: str) -> Path | None:
     path = Path(value)
     candidate = (path if path.is_absolute() else events_dir / path).resolve()
     return candidate if _inside(events_dir, candidate) and candidate != events_dir else None
+
+
+def container_event_path(events_dir: str, value: str) -> str | None:
+    """resolve_event_path for a POSIX EVENTS_DIR inside a worker container (not this machine)."""
+    if not value or "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    root = posixpath.normpath(events_dir)
+    if any(part == ".." for part in value.split("/")):
+        return None
+    candidate = posixpath.normpath(value if value.startswith("/") else posixpath.join(root, value))
+    return candidate if candidate.startswith(root.rstrip("/") + "/") else None
 
 
 def delete_files(events_dir: str, paths: Iterable[str]) -> dict[str, int]:

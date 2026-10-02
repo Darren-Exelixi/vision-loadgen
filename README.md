@@ -11,7 +11,7 @@ Layout: `vision_loadgen/` is the package. `Dockerfile` builds the image; `docker
 
 Presets exist for crowd monitoring, sentiment analysis (emotion), AI attendance, PPE, intrusion,
 fire & smoke, obstacle, productivity monitoring and fall detection. The last six follow
-vision-module-backend's tables and are not yet tested against their workers. Any worker
+vision-module-backend's tables; only intrusion has been run against its worker so far. Any worker
 built on `vision_shared`'s `KafkaFramePipeline` can be added with a `--config` file (see
 `vision_loadgen/presets.py`).
 
@@ -87,8 +87,9 @@ repository root, then
 `./.env` is loaded automatically (or `--env-file` / `LOADGEN_ENV_FILE`); variables already set in
 the shell win. Frames need not be reachable: only pointers are republished and the worker reads
 the JPEGs from its own disk. Kafka must advertise an address this machine can resolve (else add
-the broker's name to the hosts file). Without `EVENTS_DIR` locally, event rows are deleted but
-their files stay on the server (the report says so). There is no `nvidia-smi` estimate from here,
+the broker's name to the hosts file). Without `EVENTS_DIR` locally, event files are deleted inside
+the worker containers over the Worker logs ssh login (`LOADGEN_WORKER_LOGS_SSH`); without that
+either, rows are deleted but files stay on the server (the report says so). There is no `nvidia-smi` estimate from here,
 so set `gpu_free_vram_mb` with `--config` to cap stages at GPU capacity.
 
 ## Benchmark from a video (no live cameras)
@@ -133,6 +134,13 @@ scp -r corpora\lobby admin1@10.10.10.22:<compose folder>/events/loadgen_corpus/
   - `video-camera list` / `video-camera remove <id>` manage it. `cleanup --orphans` leaves it alone.
 - **Attendance:** recognition load is realistic only if the video shows enrolled faces. Otherwise
   it measures detection alone.
+  - Its worker syncs as a background job (`POST /worker/sync` with `module_name` and
+    `server_function_id`, then `GET /worker/sync/status`), and lists a camera
+    (`GET /streaming/processed/list`) only once it has processed frames from it. So synthetic
+    cameras are confirmed when frames flow, not right after the sync.
+  - Recognition only matches employees of departments linked to the camera's region. The
+    synthetic region gets the template camera's region's departments, removed at teardown; pick a
+    template camera whose region has departments.
 
 ## Web UI
 
@@ -165,6 +173,17 @@ type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh admin1@10.10.10.22 "mkdir -p ~/.
 LOADGEN_WORKER_LOGS_SSH=admin1@10.10.10.22
 # LOADGEN_WORKER_LOGS_DOCKER=sudo -n docker      # if that user needs sudo for docker
 ```
+
+Without keys, put the password in `.env` (gitignored) and install paramiko
+(`pip install -e .[ssh]`); OpenSSH cannot take a password without a terminal:
+
+```powershell
+LOADGEN_WORKER_LOGS_SSH=admin1@10.10.10.22
+LOADGEN_WORKER_LOGS_PASSWORD=<admin1's password>
+# LOADGEN_WORKER_LOGS_DOCKER=sudo docker         # sudo is answered with the same password
+```
+
+The password goes to the ssh helper through its environment, never on a command line or to the page.
 
 Containers come from the presets (`crowd_monitoring_backend`, `sentiment_analysis_backend`,
 `frs_backend`; override with `workers.<name>.container` in a `--config` file). With
@@ -222,6 +241,16 @@ started, and that stops its real cameras too. So the load generator:
   anyway stops the run and tears down.
 - **Reports per copy**: each stage lists `gpu_workers_expected` and staleness per copy
   (`gpu_workers`), so one overloaded copy shows up even when the average looks fine.
+- **Keeps the topic busy while a worker syncs.** `KafkaFramePipeline` in vision-shared-base
+  <= 1.0.6 only notices `stop()` when a message arrives; on a quiet topic its consumer thread
+  survives the restart and keeps consuming beside the new one, so every frame is processed twice
+  (processed fps above published, staleness climbing; the worker logs "Consumer thread did not
+  stop within timeout"). During every sync, including teardown's, the load generator publishes a
+  message every `kafka.wake_interval_s` (0.5 s) shaped like a synthetic frame for the camera
+  `loadgen-wake-<run_id>`, which no worker has enabled, so workers drop it unread. Turn it off with
+  `kafka.wake_during_sync: false` once the workers run a vision-shared with the fix. A worker is
+  healthy when, since its container started, "Consumer thread started" appears exactly once more
+  than "Loop ended".
 
 ## What a run does
 
@@ -275,7 +304,11 @@ to the CPU looks like that. Missing metrics never fail a run. Other workers: set
 - Everything created is written to `<results>/<run_id>/registry.json` first, so `cleanup` can
   undo it; `cleanup --orphans` finds leftovers by name even without the registry.
 - Event files are deleted only when they resolve inside `EVENTS_DIR`, plus folders named exactly
-  after a synthetic camera id. Without `EVENTS_DIR` mounted, files are left and the report says so.
+  after a synthetic camera id. The paths are saved in `registry.json` (`event_files`) before the
+  rows are deleted, so `cleanup --run-id` can retry. Without `EVENTS_DIR` mounted, both happen inside
+  the worker container (`docker exec`, over `LOADGEN_WORKER_LOGS_SSH`, under
+  `LOADGEN_CONTAINER_EVENTS_DIR`, default `/app/events`); without that either, files are left and
+  the report says so. Clips finished after teardown are not covered.
 - AI attendance: rows touched only by synthetic cameras are restored or deleted; rows also touched
   by a real camera are left alone and listed under `manual_review` in `summary.json`.
 

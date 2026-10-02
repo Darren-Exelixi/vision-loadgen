@@ -136,6 +136,7 @@ class Runner:
             source.start()
             if not source.wait_for_first_frame(self.scenario.source.first_frame_timeout_s):
                 raise RuntimeError("No frames arrived from the source camera(s); is the frame router publishing?")
+            registrar.set_wake_frame(source.frame_for(0))
 
             producer = FrameProducer(self.app.kafka)
             try:

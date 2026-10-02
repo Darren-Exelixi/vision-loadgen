@@ -235,7 +235,7 @@ def stack(tmp_path_factory):
         crowd = FakeWorker("crowd-monitoring", PG.format("vision_main"), PG.format("crowd"),
                            "crowd_gathering_settings", "selected_cameras", BOOTSTRAP, TOPIC, SECRET, max_cameras=4)
         frs = FakeWorker("ai-attendance", PG.format("vision_main"), PG.format("frs"),
-                         "frs_settings", "check_in_cameras", BOOTSTRAP, TOPIC, SECRET)
+                         "frs_settings", "check_in_cameras", BOOTSTRAP, TOPIC, SECRET, api="attendance")
         seed = _seed(crowd.port, frs.port)
         _event_image(events, seed["template"])
         crowd.on_frame = _crowd_event_writer(seed["template"], events)

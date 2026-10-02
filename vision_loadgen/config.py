@@ -82,6 +82,10 @@ def set_dotted(data: dict, dotted_key: str, raw_value: str) -> None:
 class KafkaConfig(BaseModel):
     bootstrap_servers: str = "kafka:7010"
     topic: str = "exelixi.frames.raw"
+    # Publish harmless messages while a worker syncs, so the Kafka consumer thread of a worker on
+    # vision-shared-base <= 1.0.6 notices its stop instead of leaking (see kafka_io.TopicWaker).
+    wake_during_sync: bool = True
+    wake_interval_s: float = Field(default=0.5, gt=0)
 
 
 class DatabaseConfig(BaseModel):
@@ -133,8 +137,11 @@ class OutputConfig(BaseModel):
 
 
 class EventsConfig(BaseModel):
-    # The workers' EVENTS_DIR, mounted at the same path here; empty = event files are not cleaned.
+    # The workers' EVENTS_DIR, mounted at the same path here; empty = event files are not cleaned here.
     dir: str = ""
+    # EVENTS_DIR inside the worker containers. When `dir` is not mounted here, teardown removes the
+    # synthetic cameras' event folders with `docker exec` on the Docker host (worker_logs.ssh_target).
+    container_dir: str = "/app/events"
 
 
 class WorkerLogsConfig(BaseModel):
@@ -143,6 +150,8 @@ class WorkerLogsConfig(BaseModel):
     # user@host of the Docker host the workers run on, reached with key login (ssh BatchMode);
     # "" = run docker on this machine.
     ssh_target: str = ""
+    # Password login instead of keys (needs paramiko); also answers sudo. Never sent to the page.
+    password: str = Field(default="", repr=False)
     # How to call docker there, e.g. "sudo -n docker".
     docker_command: str = "docker"
     # Lines of history shown when following starts.
@@ -206,6 +215,11 @@ class WorkerConfig(BaseModel):
     base_url: str = ""
     server_ip: str = ""
     api_prefix: str = "/api/v1"
+    # Control API shape: "standard" (vision_shared /worker/sync + /worker/status) or "attendance"
+    # (face-attendance-backend: sync job + /streaming/processed/list).
+    worker_api: Literal["standard", "attendance"] = "standard"
+    # Copy the template region's department links (department_camera_regions) to the synthetic region.
+    copy_department_links: bool = False
     consumer_group_prefix: str = ""
     settings: SettingsTarget
     camera_rows: list[CameraRowsTarget] = Field(default_factory=list)

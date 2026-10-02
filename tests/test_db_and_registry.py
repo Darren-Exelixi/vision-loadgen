@@ -110,3 +110,157 @@ def test_throughput_stages_include_max():
     scenario = ScenarioConfig.model_validate({"name": "t", "type": "throughput", "workers": ["crowd"],
                                               "start_cameras": 5, "step_cameras": 10, "max_cameras": 30})
     assert [stage.cameras for stage in build_stages(scenario)] == [5, 15, 25, 30]
+
+
+def test_event_folders_swept_inside_the_worker_container(tmp_path, monkeypatch):
+    import subprocess
+
+    from vision_loadgen import dockerhost
+    from vision_loadgen.environment import build_app_config
+    from vision_loadgen.registrar import Registrar
+
+    environ = {"LOADGEN_ENVIRONMENT": "staging", "POSTGRES_URL": "postgresql://x@127.0.0.1:1",
+               "LOADGEN_WORKER_LOGS_SSH": "admin1@10.10.10.22", "LOADGEN_WORKER_LOGS_PASSWORD": "pw"}
+    app = build_app_config(worker_settings_spec="", environ=environ, package_env={})
+    registrar = Registrar(app, ["emotion"], Registry(run_id="r", environment="staging", path=str(tmp_path / "r.json")))
+    ids = ["04c9047e-ba79-4f89-26de-aa5611842ee2", "ed5dc71f-2e03-090e-cf92-92b6520562c7"]
+    calls = []
+
+    def fake_run(cfg, remote, timeout_s=120):
+        calls.append(remote)
+        out = "/app/events/sentiment-analysis/images/04c9047e-ba79-4f89-26de-aa5611842ee2\n"
+        return subprocess.CompletedProcess(remote, 0, out.encode(), b"")
+
+    monkeypatch.setattr(dockerhost, "run", fake_run)
+    assert registrar._sweep_event_folders("emotion", ids) == \
+        "1 camera folders removed from sentiment_analysis_backend:/app/events/sentiment-analysis"
+    assert calls == [["docker", "exec", "sentiment_analysis_backend", "find", "/app/events/sentiment-analysis",
+                      "-mindepth", "1", "-maxdepth", "3", "-type", "d", "(", "-name", ids[0], "-o", "-name", ids[1], ")",
+                      "-prune", "-print", "-exec", "rm", "-rf", "{}", "+"]]
+    # The password reaches the helper through its environment, never its arguments.
+    assert dockerhost.env(app.worker_logs)["LOADGEN_SSH_FOLLOW_PASSWORD"] == "pw"
+    assert "pw" not in dockerhost.argv(app.worker_logs, calls[0])
+
+    with pytest.raises(ValueError):
+        registrar._sweep_event_folders("emotion", ["../../etc"])
+    app.events.container_dir = "/"
+    with pytest.raises(ValueError):
+        registrar._sweep_event_folders("emotion", ids[:1])
+    app.worker_logs.ssh_target = ""
+    assert registrar._sweep_event_folders("emotion", ids).startswith("skipped")
+
+
+def test_event_files_saved_then_deleted_inside_the_worker_container(tmp_path, monkeypatch):
+    import subprocess
+
+    from vision_loadgen import db as db_module
+    from vision_loadgen import dockerhost
+    from vision_loadgen.environment import build_app_config
+    from vision_loadgen.registrar import Registrar
+
+    environ = {"LOADGEN_ENVIRONMENT": "staging", "POSTGRES_URL": "postgresql://x@127.0.0.1:1",
+               "LOADGEN_WORKER_LOGS_SSH": "admin1@10.10.10.22"}
+    app = build_app_config(worker_settings_spec="", environ=environ, package_env={})
+    registry = Registry(run_id="r", environment="staging", path=str(tmp_path / "r.json"))
+    registrar = Registrar(app, ["attendance"], registry)
+    paths = ["ai-attendance/attendance_images/2026-08-21/10-57-08-036_002_time_in.jpg",
+             "/app/events/ai-attendance/attendance_videos/2026-08-21/10-57-08-036_002_time_in.mp4",
+             "../../etc/passwd"]
+    order = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_module, "connect", lambda url: Conn())
+    monkeypatch.setattr(db_module, "select_values", lambda cur, table, column, ids, columns: list(paths))
+
+    def delete_rows(cur, table, column, ids):
+        # The paths must already be on disk in the registry when the rows go.
+        order.append(json.loads(open(registry.path, encoding="utf-8").read())["event_files"])
+        return 3
+
+    monkeypatch.setattr(db_module, "delete_by_values", delete_rows)
+    calls = []
+    monkeypatch.setattr(dockerhost, "run", lambda cfg, remote, timeout_s=120: calls.append(remote)
+                        or subprocess.CompletedProcess(remote, 0, b"", b""))
+
+    target = app.workers["attendance"].purge[0]
+    result = registrar._purge_events("attendance", "postgresql://frs", target, ["cam-1"])
+    assert order == [{"attendance:frs_recognition_events": paths}]
+    assert result == {"rows_deleted": 3, "files_removed_in_container": 2, "paths_outside_events_dir": 1}
+    assert calls == [["docker", "exec", "frs_backend", "rm", "-f", "--",
+                      "/app/events/ai-attendance/attendance_images/2026-08-21/10-57-08-036_002_time_in.jpg",
+                      "/app/events/ai-attendance/attendance_videos/2026-08-21/10-57-08-036_002_time_in.mp4"]]
+
+    # A retry after the rows are gone still deletes the saved files.
+    monkeypatch.setattr(db_module, "select_values", lambda *args: [])
+    calls.clear()
+    retry = registrar._purge_events("attendance", "postgresql://frs", target, ["cam-1"])
+    assert retry["files_removed_in_container"] == 2 and len(calls) == 1
+
+
+def test_department_links_copied_from_template_region_and_removed(tmp_path, monkeypatch):
+    from vision_loadgen import db as db_module
+    from vision_loadgen.db import Column
+    from vision_loadgen.environment import build_app_config
+    from vision_loadgen.registrar import Registrar
+
+    app = build_app_config(worker_settings_spec="", environ={"LOADGEN_ENVIRONMENT": "staging",
+                                                             "POSTGRES_URL": "postgresql://x@127.0.0.1:1"},
+                           package_env={})
+    registry = Registry(run_id="r", environment="staging", path=str(tmp_path / "r.json"))
+    registry.region_id = "syn-region"
+    executed = []
+
+    class Cursor:
+        rowcount = 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append((" ".join(sql.split()), params))
+
+        def fetchone(self):
+            return {"present": True}
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_module, "table_columns", lambda cur, table: [
+        Column("department_id", "uuid", False, "", "", True), Column("camera_region_id", "uuid", False, "", "", True),
+        Column("created_by", "uuid", False, "", "", False)])
+    Registrar(app, ["attendance"], registry)._copy_department_links(Conn(), "template-region")
+    assert executed[-1] == (
+        "INSERT INTO department_camera_regions (department_id, camera_region_id, created_by) "
+        "SELECT department_id, %s::uuid, created_by FROM department_camera_regions "
+        "WHERE camera_region_id = %s::uuid ON CONFLICT DO NOTHING", ("syn-region", "template-region"))
+
+    monkeypatch.setattr(db_module, "connect", lambda url: Conn())
+    assert Registrar._remove_department_links("postgresql://main", "syn-region") == "2 deleted"
+    assert executed[-1] == ("DELETE FROM department_camera_regions WHERE camera_region_id = %s::uuid", ("syn-region",))
+    assert app.workers["attendance"].copy_department_links and not app.workers["crowd"].copy_department_links
