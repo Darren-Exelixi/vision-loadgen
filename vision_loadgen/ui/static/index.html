@@ -4,204 +4,444 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vision-loadgen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root {
-  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #596273; --line: #e3e6eb;
-  --accent: #2f6fde; --on-accent: #ffffff; --ok: #1a7f44; --warn: #96620f; --bad: #c8372d; --code: #f0f2f5;
+  color-scheme: light dark;
+  --bg: #eceef1; --panel: #ffffff; --sunken: #f4f5f7; --text: #161a21; --muted: #535c6b;
+  --line: #dde1e6; --line-strong: #c3c9d1;
+  --accent: #1f5fd1; --on-accent: #ffffff;
+  --ok: #17703c; --warn: #8a5a0b; --bad: #b8302a; --on-bad: #ffffff;
+  --staging: #0f6f77; --on-staging: #ffffff;
+  --s1: #2459c9; --s2: #c4610f; --s3: #13804a; --s4: #7f43c9; --s5: #0a8592; --s6: #a0336f;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --env: var(--muted); --on-env: var(--panel);
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #111418; --panel: #1a1f26; --text: #e6e9ee; --muted: #98a2b3; --line: #2b323c;
-          --accent: #6ea0ff; --on-accent: #0b1220; --ok: #4cc38a; --warn: #e2b04a; --bad: #f2766b; --code: #13171c; }
+  :root {
+    --bg: #0d1014; --panel: #151a20; --sunken: #10141a; --text: #e4e8ee; --muted: #9aa4b2;
+    --line: #262d36; --line-strong: #364049;
+    --accent: #7aa7ff; --on-accent: #0a1220;
+    --ok: #52c58e; --warn: #e5b450; --bad: #f07a70; --on-bad: #1d0705;
+    --staging: #4cc7cf; --on-staging: #04191b;
+    --s1: #7aa7ff; --s2: #f0a052; --s3: #52c58e; --s4: #b48cf2; --s5: #4cc7cf; --s6: #e57fb4;
+  }
 }
+body[data-env="production"] { --env: var(--bad); --on-env: var(--on-bad); }
+body[data-env="staging"] { --env: var(--staging); --on-env: var(--on-staging); }
+
 * { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
-header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
-header h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
-.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--code); color: var(--muted); }
-.badge.prod { background: var(--bad); color: #fff; }
-main { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; gap: 16px; padding: 16px 20px; align-items: start; }
-@media (max-width: 980px) { main { grid-template-columns: 1fr; } }
-section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
-section.card h2 { font-size: 16px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
-section.card h2 .step { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
-label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
-input[type=text], input[type=number], select, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
-textarea { font-family: ui-monospace, Consolas, monospace; font-size: 12px; min-height: 52px; }
-.row { display: flex; gap: 8px; } .row > * { flex: 1; }
-.checks { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
-.checks label { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--text); font-size: 13px; }
-button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-button.danger { color: var(--bad); }
-button:disabled { opacity: .5; cursor: default; }
-.actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 500; }
-td.mono, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; word-break: break-all; }
-tr.clickable { cursor: pointer; } tr.clickable:hover { background: var(--code); }
-.muted { color: var(--muted); font-size: 12px; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.tile { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
-.tile .k { color: var(--muted); font-size: 11.5px; } .tile .v { font-size: 18px; font-weight: 600; margin-top: 2px; word-break: break-word; }
-.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
-.chart { border: 1px solid var(--line); border-radius: 8px; padding: 8px; height: 240px; position: relative; }
-.chart h3 { font-size: 12px; margin: 0 0 4px; color: var(--muted); font-weight: 500; }
-.chart canvas { position: absolute; left: 8px; right: 8px; top: 26px; bottom: 8px; width: calc(100% - 16px) !important; height: calc(100% - 34px) !important; }
-pre.console { background: var(--code); border-radius: 8px; padding: 10px; max-height: 360px; overflow: auto; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-word; }
-pre.console .ok { color: var(--ok); } pre.console .warn { color: var(--warn); } pre.console .fail { color: var(--bad); font-weight: 600; }
+body { margin: 0; font: 14px/1.45 var(--sans); background: var(--bg); color: var(--text); font-variant-numeric: tabular-nums; }
+::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input, textarea { caret-color: var(--accent); }
+input[type=checkbox], input[type=radio], progress { accent-color: var(--accent); }
+* { scrollbar-color: var(--line-strong) transparent; }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+.mono { word-break: break-all; }
+.muted { color: var(--muted); }
+.vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .ok-text { color: var(--ok); } .bad-text { color: var(--bad); } .warn-text { color: var(--warn); }
-.tabs { display: flex; gap: 6px; margin-bottom: 10px; }
-.tabs button.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.hint { background: var(--code); border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 12px; }
-progress { width: 100%; height: 8px; margin-top: 6px; }
-.error { color: var(--bad); font-size: 12px; margin-top: 6px; min-height: 1em; }
-.banner { border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; font-size: 13px; }
-.verdict-hint { color: var(--warn); font-size: 11.5px; margin-top: 2px; }
-.logbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+
+/* masthead: environment, then the run bar */
+.masthead { position: sticky; top: 0; z-index: 5; background: var(--panel); border-top: 3px solid var(--env);
+            border-bottom: 1px solid var(--line); box-shadow: 0 2px 10px -6px rgba(0, 0, 0, .25); }
+.env-band { display: none; padding: 6px 20px; font-size: 13px; font-weight: 600; background: var(--bad); color: var(--on-bad); }
+body[data-env="production"] .env-band { display: block; }
+.masthead-row { display: flex; align-items: center; gap: 12px; padding: 8px 20px; }
+.brand { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.env-pill { padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+            background: var(--env); color: var(--on-env); }
+.runbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 18px; padding: 8px 20px; border-top: 1px solid var(--line); background: var(--sunken); }
+.run-state { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.runbar[data-state="running"] .dot { background: var(--ok); animation: pulse 1.8s cubic-bezier(.16, 1, .3, 1) infinite; }
+.runbar[data-state="starting"] .dot, .runbar[data-state="stopping"] .dot, .runbar[data-state="aborted"] .dot { background: var(--warn); }
+.runbar[data-state="failed"] .dot { background: var(--bad); }
+.runbar[data-state="done"] .dot { background: var(--ok); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+.run-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); }
+.run-meta b { font-family: var(--mono); font-size: 12.5px; font-weight: 500; color: var(--text); }
+.chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--bad); color: var(--bad); }
+.spacer { flex: 1; }
+
+/* layout */
+main { display: grid; grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); gap: 16px; padding: 16px 20px; align-items: start; }
+@media (max-width: 980px) {
+  main { grid-template-columns: minmax(0, 1fr); padding: 12px 16px; }
+  .masthead-row, .runbar, .env-band { padding-left: 16px; padding-right: 16px; }
+}
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
+.panel > h2 { font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+.fatal { grid-column: 1 / -1; border-color: var(--bad); }
+.fatal h2 { color: var(--bad); }
+details.panel > summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; list-style: none; font-size: 17px; font-weight: 600; }
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary::before { content: ""; align-self: center; border-left: 5px solid currentColor; border-top: 4px solid transparent;
+                                  border-bottom: 4px solid transparent; transition: transform .2s cubic-bezier(.16, 1, .3, 1); }
+details[open].panel > summary { margin-bottom: 6px; }
+details[open].panel > summary::before { transform: rotate(90deg); }
+details.panel > summary .muted { font-size: 12px; font-weight: 400; }
+h3.sub { font-size: 13px; font-weight: 600; margin: 18px 0 2px; }
+h3.sub:first-of-type { margin-top: 8px; }
+
+/* forms */
+label, .label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin: 10px 0 3px; }
+fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+legend.label { padding: 0; }
+input[type=text], input[type=number], select, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 4px;
+  background: var(--sunken); color: var(--text); font: inherit; }
+textarea { font-family: var(--mono); font-size: 12px; min-height: 52px; resize: vertical; }
+[aria-invalid="true"] { border-color: var(--bad) !important; }
+.help { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+.field-msg { font-size: 12px; color: var(--bad); margin-top: 3px; }
+.field-msg:empty { display: none; }
+.row { display: flex; gap: 8px; } .row > * { flex: 1; min-width: 0; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 4px; }
+.checks label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 400; color: var(--text); }
+.checks label.disabled { color: var(--muted); }
+.checks.workers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 5px 14px; }
+.flash { animation: flash 1.4s cubic-bezier(.16, 1, .3, 1); }
+@keyframes flash { from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 50%, transparent); } to { box-shadow: 0 0 0 0 transparent; } }
+
+/* buttons */
+button { padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel); color: var(--text);
+         font: inherit; font-size: 13px; cursor: pointer; }
+button:hover:not(:disabled) { background: var(--sunken); border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, var(--text)); border-color: transparent; }
+body[data-env="production"] button.primary { background: var(--bad); border-color: var(--bad); color: var(--on-bad); }
+button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+button.stop { background: var(--bad); border-color: var(--bad); color: var(--on-bad); font-weight: 600; }
+button.stop:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 86%, var(--text)); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.link { padding: 0; border: 0; background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; font-size: inherit; }
+button.link:hover:not(:disabled) { background: none; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+kbd { font-family: var(--mono); font-size: 11px; padding: 1px 4px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--muted); }
+.note { font-size: 12px; margin-top: 8px; }
+.error { color: var(--bad); font-size: 12px; margin-top: 6px; }
+.note:empty, .error:empty { margin: 0; }
+progress { width: 100%; height: 8px; margin-top: 8px; }
+
+/* tables */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th { font-size: 12px; font-weight: 500; color: var(--muted); }
+tbody th { font-weight: 500; }
+.num { text-align: right; font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+tr[aria-current="true"] { background: var(--sunken); }
+td .muted { font-size: 12px; }
+
+/* tabs */
+.tabs { display: flex; gap: 2px; margin: -4px 0 14px; border-bottom: 1px solid var(--line); }
+.tabs [role="tab"] { margin-bottom: -1px; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+                     background: none; color: var(--muted); font-weight: 500; }
+.tabs [role="tab"]:hover:not(:disabled) { background: none; color: var(--text); }
+.tabs [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+/* run view */
+.view-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin-bottom: 12px; }
+.view-title { margin: 0; font-size: 18px; font-weight: 600; }
+.empty { padding: 28px 4px; color: var(--muted); }
+.banner { border: 1px solid var(--bad); color: var(--bad); border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; font-size: 13px; font-weight: 500; }
+.result { border: 1px solid var(--line-strong); border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; background: var(--sunken); }
+.result-head { margin: 0; font-size: 22px; letter-spacing: -0.01em; font-weight: 600; }
+.result.ok .result-head { color: var(--ok); } .result.warn .result-head { color: var(--warn); } .result.bad .result-head { color: var(--bad); }
+.result ul { margin: 6px 0 0; padding-left: 18px; }
+.section-title { font-size: 13px; font-weight: 600; margin: 18px 0 6px; }
+.meter { display: grid; gap: 4px; min-width: 160px; max-width: 300px; }
+.meter-track { height: 6px; border-radius: 3px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
+.meter-track > span { display: block; height: 100%; background: var(--ok); }
+.meter.warn .meter-track > span { background: var(--warn); }
+.meter.bad .meter-track > span { background: var(--bad); }
+.meter-text { font-family: var(--mono); font-size: 12.5px; }
+.meter.bad .meter-text { color: var(--bad); font-weight: 500; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 14px 0 0; font-size: 13px; }
+.facts div { display: flex; gap: 6px; align-items: baseline; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-family: var(--mono); font-size: 12.5px; }
+.verdict-hint { color: var(--warn); font-size: 12px; margin-top: 2px; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; margin-top: 16px; }
+.chart { position: relative; height: 240px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.chart h3 { margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.chart.nodata canvas { visibility: hidden; }
+.chart.nodata::after { content: attr(data-empty); position: absolute; inset: 26px 8px 8px; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.chart canvas { position: absolute; left: 8px; right: 8px; top: 26px; bottom: 8px; width: calc(100% - 16px) !important; height: calc(100% - 34px) !important; }
+
+/* consoles */
+pre.console { margin: 0; padding: 10px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--sunken);
+              font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
+pre.console:empty::before { content: "Pick a job below to see its output."; color: var(--muted); font-family: var(--sans); }
+pre.console.tall:empty::before { content: "Nothing to show yet."; }
+pre.console.tall { max-height: 640px; min-height: 320px; }
+pre.console .ok { color: var(--ok); } pre.console .warn { color: var(--warn); } pre.console .fail { color: var(--bad); font-weight: 500; }
+.logbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 .logbar select, .logbar input[type=text] { width: auto; min-width: 160px; }
 .logbar input[type=text] { flex: 1; }
-.logbar label { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--text); font-size: 13px; }
-pre.console.tall { max-height: 640px; min-height: 320px; }
+.logbar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 400; color: var(--text); }
+.job-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
+
+/* run confirmation */
+dialog { width: min(540px, calc(100vw - 32px)); padding: 18px 20px; border: 0; border-radius: 8px;
+         background: var(--panel); color: var(--text); box-shadow: 0 16px 48px -16px rgba(0, 0, 0, .45); }
+dialog::backdrop { background: rgba(8, 10, 14, .5); }
+dialog h2 { margin: 0; font-size: 20px; }
+.dialog-env { margin: 10px 0 0; padding: 6px 10px; border-radius: 4px; font-size: 13px; font-weight: 600; background: var(--env); color: var(--on-env); }
+.summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 14px 0; font-size: 13px; }
+.summary dt { color: var(--muted); }
+.summary dd { margin: 0; overflow-wrap: anywhere; }
+.ack { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 8px 10px; border: 1px solid var(--bad); border-radius: 4px;
+       font-size: 13px; font-weight: 500; color: var(--text); }
+dialog .actions { justify-content: flex-end; margin-top: 16px; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>vision-loadgen</h1>
-  <span id="env" class="badge">…</span>
+<header class="masthead">
+  <div class="env-band" id="envBand"></div>
+  <div class="masthead-row">
+    <h1 class="brand">vision-loadgen</h1>
+    <span class="env-pill" id="env">…</span>
+  </div>
+  <div class="runbar" id="runbar" data-state="idle">
+    <span class="run-state"><span class="dot" aria-hidden="true"></span><span id="runStateText">Idle</span></span>
+    <div class="run-meta" id="runMeta"></div>
+    <span class="chip" id="offlineChip" hidden>Server unreachable · retrying</span>
+    <span class="spacer"></span>
+    <button class="stop" id="stopBtn" hidden>Stop run</button>
+  </div>
 </header>
+<div id="announcer" class="vh" role="status" aria-live="polite"></div>
 
 <main>
+<section class="panel fatal" id="fatal" role="alert" hidden>
+  <h2>Cannot load the console</h2>
+  <p id="fatalMsg"></p>
+  <p class="help">Check that <code>python -m vision_loadgen ui</code> is still running, then retry.</p>
+  <div class="actions"><button id="retryBtn">Retry</button></div>
+</section>
+
 <div>
-  <section class="card">
-    <h2><span class="step">1</span>Video corpus</h2>
-    <label>Video file</label>
-    <div class="row"><input type="file" id="videoFile" accept="video/*"><button id="uploadBtn">Upload</button></div>
-    <progress id="uploadProgress" value="0" max="100" hidden></progress>
-    <label>Uploaded video</label>
+  <section class="panel" aria-labelledby="loadTitle">
+    <h2 id="loadTitle">Load test</h2>
+    <form id="loadForm" novalidate>
+      <fieldset>
+        <legend class="label">Workers</legend>
+        <div class="checks workers" id="workers"></div>
+      </fieldset>
+      <div class="row">
+        <div><label for="scenario">Scenario</label>
+          <select id="scenario"><option value="latency">latency</option><option value="throughput">throughput</option><option value="soak">soak</option></select></div>
+        <div><label for="sizing">Model sizing</label>
+          <select id="sizing"><option value="per_stage" selected>per stage</option><option value="fixed">fixed</option></select></div>
+      </div>
+      <p class="help" id="scenarioHelp"></p>
+      <p class="help" id="sizingHelp">Per stage re-syncs the worker at every level, so the GPU runs as many model copies as production would; each re-sync restarts its pipeline. Fixed enables the largest count once.</p>
+      <div class="row">
+        <div><label for="serverIp">Server IP <span class="muted">(optional)</span></label><input type="text" id="serverIp" placeholder="10.10.10.22" autocomplete="off"></div>
+      </div>
+      <label for="templateCamera">Template camera id <span class="muted">(blank: freshest real camera)</span></label>
+      <input type="text" id="templateCamera" list="cameraList" autocomplete="off" spellcheck="false" aria-describedby="templateMsg">
+      <datalist id="cameraList"></datalist>
+      <div class="field-msg" id="templateMsg"></div>
+      <fieldset>
+        <legend class="label">Frames from</legend>
+        <div class="checks">
+          <label><input type="radio" name="source" value="corpus" checked> Corpus</label>
+          <label><input type="radio" name="source" value="live"> Live camera</label>
+        </div>
+      </fieldset>
+      <label for="runCorpus" class="vh">Corpus for this run</label>
+      <select id="runCorpus" style="margin-top:6px"></select>
+      <label for="overrides">Overrides <span class="muted">(one key=value per line)</span></label>
+      <textarea id="overrides" placeholder="levels=[5,10,20]&#10;level_duration_s=120" spellcheck="false" aria-describedby="overridesHelp overridesMsg"></textarea>
+      <div class="field-msg" id="overridesMsg"></div>
+      <p class="help" id="overridesHelp"></p>
+      <div class="checks" style="margin-top:10px">
+        <label id="noGuardLabel"><input type="checkbox" id="noGuard" aria-describedby="noGuardHelp"> No guard</label>
+        <label><input type="checkbox" id="keepEvents"> Keep events</label>
+      </div>
+      <p class="help" id="noGuardHelp"></p>
+      <div class="actions">
+        <button type="button" class="primary" id="runBtn">Run…</button>
+        <button type="button" id="checkBtn">Check</button>
+        <span class="help" style="margin:0"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs</span>
+      </div>
+      <p class="help" id="runBlocked" hidden></p>
+      <div class="error" id="runError" aria-live="polite"></div>
+      <div class="note" id="runNote" aria-live="polite"></div>
+    </form>
+  </section>
+
+  <details class="panel" id="setupPanel">
+    <summary>Setup <span class="muted" id="setupSummary"></span></summary>
+    <h3 class="sub">Video corpus</h3>
+    <label for="videoFile">Video file</label>
+    <div class="row"><input type="file" id="videoFile" accept="video/*"><button id="uploadBtn">Upload</button><button id="uploadCancel" hidden>Cancel</button></div>
+    <progress id="uploadProgress" value="0" max="100" aria-label="Upload progress" hidden></progress>
+    <div class="help" id="uploadStatus" aria-live="polite"></div>
+    <label for="uploadedVideo">Uploaded video</label>
     <select id="uploadedVideo"></select>
     <div class="row">
-      <div><label>Corpus name</label><input type="text" id="corpusName" placeholder="lobby"></div>
-      <div><label>FPS</label><input type="number" id="corpusFps" value="5" min="0.1" step="0.5"></div>
-      <div><label>Max seconds</label><input type="number" id="corpusMax" value="0" min="0"></div>
+      <div><label for="corpusName">Corpus name</label><input type="text" id="corpusName" placeholder="lobby"></div>
+      <div><label for="corpusFps">FPS</label><input type="number" id="corpusFps" value="5" min="0.1" step="0.5"></div>
+      <div><label for="corpusMax">Max seconds</label><input type="number" id="corpusMax" value="0" min="0"></div>
     </div>
-    <label>Image root on the workers (default /app/events/loadgen_corpus/&lt;name&gt;)</label>
-    <input type="text" id="imageRoot" placeholder="/app/events/loadgen_corpus/lobby">
-    <label>Copy target for the scp hint</label>
+    <label for="imageRoot">Image root on the workers</label>
+    <input type="text" id="imageRoot" placeholder="/app/events/loadgen_corpus/lobby" aria-describedby="imageRootHelp">
+    <p class="help" id="imageRootHelp">Default <code>/app/events/loadgen_corpus/&lt;name&gt;</code>.</p>
+    <label for="copyTarget">Copy target for the scp hint</label>
     <input type="text" id="copyTarget" placeholder="admin1@10.10.10.22:/path/to/events/loadgen_corpus/">
-    <div class="actions"><button class="primary" id="corpusBtn">Create corpus</button></div>
-    <div class="error" id="corpusError"></div>
-    <table id="corporaTable"><thead><tr><th>Corpus</th><th>Frames</th><th>FPS</th><th>Read from</th></tr></thead><tbody></tbody></table>
-  </section>
+    <div class="actions"><button id="corpusBtn">Create corpus</button></div>
+    <div class="error" id="corpusError" aria-live="polite"></div>
+    <div class="note" id="corpusNote" aria-live="polite"></div>
+    <div class="table-wrap"><table id="corporaTable"><thead><tr><th>Corpus</th><th class="num">Frames</th><th class="num">FPS</th><th>Read from</th></tr></thead><tbody></tbody></table></div>
 
-  <section class="card">
-    <h2><span class="step">2</span>Video camera (template)</h2>
-    <table id="camerasTable"><thead><tr><th>Name</th><th>Id</th><th></th></tr></thead><tbody></tbody></table>
+    <h3 class="sub">Template video camera</h3>
+    <div class="table-wrap"><table id="camerasTable"><thead><tr><th>Name</th><th>Id</th><th><span class="vh">Actions</span></th></tr></thead><tbody></tbody></table></div>
     <div class="row">
-      <div><label>Name</label><input type="text" id="camName" placeholder="Lobby video"></div>
-      <div><label>Corpus</label><select id="camCorpus"></select></div>
+      <div><label for="camName">Name</label><input type="text" id="camName" placeholder="Lobby video"></div>
+      <div><label for="camCorpus">Corpus</label><select id="camCorpus"></select></div>
     </div>
-    <label>Copy region/timezone from camera (id)</label>
-    <input type="text" id="camLike" placeholder="7797ee15-32d5-46b7-b736-ac078e9b9b8c">
-    <label>Copy zones from camera (id, optional)</label>
-    <input type="text" id="camZones">
-    <div class="actions"><button class="primary" id="camAddBtn">Add video camera</button><button id="camRefreshBtn">Refresh</button></div>
-    <div class="error" id="camError"></div>
-  </section>
+    <label for="camLike">Copy region and timezone from camera id</label>
+    <input type="text" id="camLike" placeholder="7797ee15-32d5-46b7-b736-ac078e9b9b8c" spellcheck="false" aria-describedby="camLikeMsg">
+    <div class="field-msg" id="camLikeMsg"></div>
+    <label for="camZones">Copy zones from camera id <span class="muted">(optional)</span></label>
+    <input type="text" id="camZones" spellcheck="false" aria-describedby="camZonesMsg">
+    <div class="field-msg" id="camZonesMsg"></div>
+    <div class="actions"><button id="camAddBtn">Add video camera</button><button id="camRefreshBtn">Refresh list</button></div>
+    <div class="error" id="camError" aria-live="polite"></div>
+    <div class="note" id="camNote" aria-live="polite"></div>
+  </details>
 
-  <section class="card">
-    <h2><span class="step">3</span>Load test</h2>
-    <label>Workers</label>
-    <div class="checks" id="workers"></div>
-    <div class="row">
-      <div><label>Server IP</label><input type="text" id="serverIp" placeholder="10.10.10.22"></div>
-      <div><label>Scenario</label><select id="scenario"><option>latency</option><option>throughput</option><option>soak</option></select></div>
-      <div><label for="sizing">Model sizing</label><select id="sizing" title="Fixed: enable the largest camera count once, one worker re-sync. Per stage: re-sync at every level so the GPU runs as many model copies as production would; each re-sync restarts the worker's pipeline.">
-        <option value="fixed" selected>fixed</option><option value="per_stage">per stage</option></select></div>
-    </div>
-    <p class="muted" style="margin:4px 0 0">Fixed sizing re-syncs the worker once. Per stage restarts its pipeline at every level.</p>
-    <label>Template camera (id)</label>
-    <input type="text" id="templateCamera">
-    <label>Frames from</label>
-    <div class="checks">
-      <label><input type="radio" name="source" value="corpus" checked> Corpus</label>
-      <label><input type="radio" name="source" value="live"> Live camera</label>
-    </div>
-    <select id="runCorpus" style="margin-top:6px"></select>
-    <label>Overrides (one key=value per line)</label>
-    <textarea id="overrides" placeholder="levels=[5,10,20]&#10;level_duration_s=120"></textarea>
-    <div class="checks" style="margin-top:8px">
-      <label><input type="checkbox" id="noGuard"> No guard (staging throughput)</label>
-      <label><input type="checkbox" id="keepEvents"> Keep events</label>
-    </div>
-    <div class="actions">
-      <button id="checkBtn">Check</button>
-      <button class="primary" id="runBtn">Run</button>
-      <button class="danger" id="stopBtn" disabled>Stop</button>
-    </div>
-    <div class="error" id="runError"></div>
-  </section>
-
-  <section class="card">
-    <h2>Cleanup</h2>
-    <p class="muted">Leftover synthetic cameras from crashed runs (video cameras are kept).</p>
-    <div class="actions" style="margin-top:0"><button id="orphansBtn">List leftovers</button><button class="danger" id="orphansYesBtn">Remove leftovers</button></div>
-  </section>
+  <details class="panel">
+    <summary>Cleanup</summary>
+    <p class="help">Leftover synthetic cameras from crashed runs. Video cameras are kept.</p>
+    <div class="actions"><button id="orphansBtn">List leftovers</button><button class="danger" id="orphansYesBtn">Remove leftovers…</button></div>
+    <div class="error" id="cleanupError" aria-live="polite"></div>
+    <div class="note" id="cleanupNote" aria-live="polite"></div>
+  </details>
 </div>
 
 <div>
-  <section class="card">
-    <div class="tabs"><button id="tabLive" class="active">Live</button><button id="tabHistory">History</button><button id="tabLogs">Worker logs</button></div>
-    <div id="logsView" hidden>
+  <section class="panel">
+    <div class="tabs" role="tablist" aria-label="Views" id="tabs">
+      <button role="tab" id="tabLive" aria-controls="liveView" aria-selected="true">Run</button>
+      <button role="tab" id="tabHistory" aria-controls="historyView" aria-selected="false" tabindex="-1">History</button>
+      <button role="tab" id="tabLogs" aria-controls="logsView" aria-selected="false" tabindex="-1">Worker logs</button>
+    </div>
+
+    <div id="liveView" role="tabpanel" aria-labelledby="tabLive">
+      <div class="view-head">
+        <h2 class="view-title" id="viewTitle" tabindex="-1">No run yet</h2>
+        <button class="link" id="backToRun" hidden>Back to the current run</button>
+      </div>
+      <div id="abortBanner" class="banner" role="alert" hidden></div>
+      <div id="result" hidden></div>
+      <p class="empty" id="liveEmpty">Choose workers and a scenario, then press Run (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Charts and verdicts appear here once the first sample arrives.</p>
+      <div id="liveBody" hidden>
+        <div class="table-wrap">
+          <table id="nowTable">
+            <caption class="vh" id="nowCaption">Latest sample per worker</caption>
+            <thead><tr><th>Worker</th><th>Synthetic staleness p95</th><th class="num">Kafka lag</th><th class="num">Processed</th><th class="num">Stages kept up</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <dl class="facts" id="facts"></dl>
+        <h3 class="section-title">Stage verdicts</h3>
+        <div class="table-wrap">
+          <table id="verdicts"><thead><tr><th class="num">#</th><th>Stage</th><th>Worker</th><th>Verdict</th><th class="num">p95 (s)</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="charts">
+          <div class="chart"><h3 id="hStaleness">Synthetic staleness p95 (s) against the keep-up limit</h3><canvas id="cStaleness" role="img" aria-labelledby="hStaleness"></canvas></div>
+          <div class="chart"><h3 id="hExcess">Real-camera staleness above baseline (s) against the guard limit</h3><canvas id="cExcess" role="img" aria-labelledby="hExcess"></canvas></div>
+          <div class="chart"><h3 id="hLoad">Synthetic cameras, published and processed frames/s</h3><canvas id="cLoad" role="img" aria-labelledby="hLoad"></canvas></div>
+          <div class="chart"><h3 id="hLag">Kafka consumer lag (messages)</h3><canvas id="cLag" role="img" aria-labelledby="hLag"></canvas></div>
+          <div class="chart"><h3 id="hStages">Worker stage time p95 (ms), from the worker's own metrics</h3><canvas id="cStages" role="img" aria-labelledby="hStages"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="historyView" role="tabpanel" aria-labelledby="tabHistory" hidden>
+      <div class="error" id="historyError" aria-live="polite"></div>
+      <div class="table-wrap">
+        <table id="runsTable"><thead><tr><th>Run</th><th>Scenario</th><th>Workers</th><th>Source</th><th class="num">Stages</th><th>Result</th><th><span class="vh">Actions</span></th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div id="logsView" role="tabpanel" aria-labelledby="tabLogs" hidden>
       <div class="logbar">
         <select id="logWorker" aria-label="Worker"></select>
-        <button class="primary" id="logFollowBtn">Follow</button>
-        <button id="logStopBtn" disabled>Stop</button>
+        <button id="logFollowBtn">Follow</button>
+        <button id="logStopBtn" disabled>Stop following</button>
         <input type="text" id="logFilter" placeholder="Filter (text or regex), e.g. KAFKA|onnxruntime" aria-label="Filter">
         <label><input type="checkbox" id="logProblems"> Warnings and errors only</label>
       </div>
-      <div class="muted" id="logStatus">Pick a worker and press Follow.</div>
-      <pre class="console tall" id="workerLog"></pre>
-    </div>
-    <div id="liveView">
-    <div id="viewTitle" class="muted">No run yet.</div>
-    <div id="abortBanner" class="banner" hidden></div>
-    <div class="tiles" id="tiles"></div>
-    <div class="charts">
-      <div class="chart"><h3>Synthetic staleness p95 (s)</h3><canvas id="cStaleness"></canvas></div>
-      <div class="chart"><h3>Kafka consumer lag (messages)</h3><canvas id="cLag"></canvas></div>
-      <div class="chart"><h3>Real-camera staleness above baseline (s)</h3><canvas id="cExcess"></canvas></div>
-      <div class="chart"><h3>Synthetic cameras, published and processed frames/s</h3><canvas id="cLoad"></canvas></div>
-      <div class="chart"><h3>Worker stage time p95 (ms), from the worker's own metrics</h3><canvas id="cStages"></canvas></div>
-    </div>
-    <h3 style="font-size:13px;margin:14px 0 6px">Stage verdicts</h3>
-    <table id="verdicts"><thead><tr><th>#</th><th>Stage</th><th>Worker</th><th>Verdict</th><th>p95</th></tr></thead><tbody></tbody></table>
+      <div class="help" id="logStatus" aria-live="polite">Pick a worker and press Follow.</div>
+      <pre class="console tall" id="workerLog" tabindex="0" aria-label="Worker log" style="margin-top:8px"></pre>
     </div>
   </section>
 
-  <section class="card" id="historyCard" hidden>
-    <h2>Past runs</h2>
-    <table id="runsTable"><thead><tr><th>Run</th><th>Scenario</th><th>Workers</th><th>Source</th><th>Stages</th><th>Result</th></tr></thead><tbody></tbody></table>
-  </section>
-
-  <section class="card">
-    <h2>Output <span class="muted" id="jobTitle"></span></h2>
-    <pre class="console" id="console"></pre>
-    <table id="jobsTable" style="margin-top:10px"><thead><tr><th>Job</th><th>Command</th><th>Status</th></tr></thead><tbody></tbody></table>
+  <section class="panel" id="outputPanel" aria-labelledby="outputTitle">
+    <div class="job-head"><h2 id="outputTitle" style="margin:0;font-size:17px">Output</h2><span class="muted" id="jobTitle"></span></div>
+    <pre class="console" id="console" tabindex="0" aria-label="Job output"></pre>
+    <div class="table-wrap" style="margin-top:10px">
+      <table id="jobsTable"><thead><tr><th>Job</th><th>What</th><th>Status</th></tr></thead><tbody></tbody></table>
+    </div>
   </section>
 </div>
 </main>
 
+<dialog id="runDialog" aria-labelledby="runDialogTitle">
+  <form method="dialog">
+    <h2 id="runDialogTitle">Start this run?</h2>
+    <p class="dialog-env" id="runDialogEnv"></p>
+    <dl class="summary" id="runSummary"></dl>
+    <label class="ack" id="prodAckRow" hidden><input type="checkbox" id="prodAck"> I understand this puts synthetic load on production cameras and GPUs.</label>
+    <div class="actions">
+      <button value="cancel" id="runCancel">Cancel</button>
+      <button value="run" class="primary" id="runConfirm">Start run</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { config: null, jobId: null, offset: 0, runJobId: null, metricsNext: 0, snapshots: [], mode: "live", charts: {},
-                logs: { targets: [], worker: "", offset: 0, lines: [], partial: "", following: false, dirty: true } };
+const state = {
+  config: null, jobs: [], jobId: null, offset: 0, refreshed: new Set(), jobsLoaded: false, notes: {},
+  runJobId: null, runJob: null, runId: "", stopping: false, metricsNext: 0, snapshots: [], live: {},
+  liveModel: null, liveResult: null, liveAborted: false, resultFor: null, viewing: null, viewModel: null, lastModel: null,
+  mode: "live", charts: {}, runs: [], offline: false, lastRunState: null, corpusCount: 0, cameraCount: 0,
+  logs: { targets: [], worker: "", offset: 0, lines: [], partial: "", following: false, dirty: true },
+};
 const MAX_LOG_LINES = 5000;
-const COLORS = ["#2f6fde", "#e07a1f", "#1a8f4c", "#9b51e0", "#c8372d", "#0f9aa5"];
+const FORM_KEY = "vision-loadgen.form.v1";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SET_KEY = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$/;
+const KIND = { run: "Run", check: "Check", corpus: "Corpus", "video-camera": "Video camera", cleanup: "Cleanup" };
+const SCENARIOS = {
+  throughput: { text: "Ramps from 5 to 60 cameras, adding 5 every 120 s, until each worker falls behind. The guard aborts the run if real cameras suffer.",
+                keys: "start_cameras=5, step_cameras=5, max_cameras=60, step_duration_s=120" },
+  latency: { text: "Holds 5, 10 and 20 cameras for 180 s each and measures processing delay. The guard backs off if real cameras suffer.",
+             keys: "levels=[5,10,20], level_duration_s=180" },
+  soak: { text: "Holds 15 cameras for 4 hours. The guard backs off if real cameras suffer.", keys: "cameras=15, duration_s=14400" },
+};
+const STATE_TEXT = { idle: "Idle", starting: "Starting…", running: "Running", stopping: "Stopping…", done: "Finished", aborted: "Aborted", failed: "Failed" };
+let COLORS = [];
+let LIMIT_COLOR = "#b8302a";
+const THEME = { line: "", muted: "" };
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  let response;
+  try { response = await fetch(path, options); } catch (error) { setOffline(true); throw new Error("Cannot reach the vision-loadgen UI server"); }
+  setOffline(false);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || response.statusText);
   return body;
@@ -209,69 +449,95 @@ async function api(path, options = {}) {
 const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "–" : Number(v).toFixed(d);
+const lastOf = (values) => { for (let i = values.length - 1; i >= 0; i--) if (values[i] !== null && values[i] !== undefined && !Number.isNaN(values[i])) return values[i]; return null; };
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const fmtBytes = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(0)} MB` : `${Math.ceil(n / 1e3)} kB`;
+function fmtElapsed(seconds) {
+  const s = Math.max(0, Math.floor(seconds)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
+}
+function announce(message) { const el = $("announcer"); el.textContent = ""; requestAnimationFrame(() => { el.textContent = message; }); }
+function setOffline(offline) {
+  if (state.offline === offline) return;
+  state.offline = offline;
+  $("offlineChip").hidden = !offline;
+  if (offline) announce("Lost contact with the UI server. Retrying.");
+}
 
 // ------------------------------------------------------------------ setup
 async function init() {
   state.config = await api("/api/config");
-  const env = $("env");
-  env.textContent = state.config.environment;
-  env.classList.toggle("prod", state.config.environment === "production");
+  const env = state.config.environment;
+  document.body.dataset.env = env;
+  $("env").textContent = env;
+  if (env === "production") {
+    $("envBand").textContent = state.config.allow_production
+      ? "Production. Runs put synthetic load on live cameras and GPUs."
+      : "Production, read only. The UI was started without --allow-production, so Run is off. Check still works.";
+  }
   $("workers").innerHTML = state.config.workers.map((w) =>
-    `<label><input type="checkbox" value="${esc(w.name)}" ${["emotion", "attendance"].includes(w.name) ? "checked" : ""}> ${esc(w.name)} <span class="muted">${esc(w.function_key)}</span></label>`).join("");
+    `<label><input type="checkbox" value="${esc(w.name)}"> ${esc(w.name)} <span class="muted">${esc(w.function_key)}</span></label>`).join("");
   $("copyTarget").value = state.config.copy_target || "";
   $("templateCamera").value = state.config.template_camera || "";
+  themeCharts();
   makeCharts();
   await Promise.all([refreshUploads(), refreshCorpora(), refreshCameras(), refreshJobs(), refreshLogTargets()]);
-  if (location.hash === "#logs") showMode("logs");
+  restoreForm();
+  updateScenarioHelp();
+  $("setupPanel").open = !(state.corpusCount && state.cameraCount);
+  if (location.hash === "#logs") showMode("logs"); else showCurrentView();
+  updateRunBar();
   setInterval(tick, 2000);
-  setInterval(refreshJobs, 5000);
+  setInterval(updateRunBar, 1000);
 }
 
 async function refreshUploads() {
   const files = await api("/api/uploads");
+  const current = $("uploadedVideo").value;
   $("uploadedVideo").innerHTML = files.map((f) => `<option>${esc(f)}</option>`).join("") || "<option value=''>(none uploaded)</option>";
+  if (files.includes(current)) $("uploadedVideo").value = current;
 }
 
 async function refreshCorpora() {
   const corpora = await api("/api/corpora");
+  state.corpusCount = corpora.length;
   $("corporaTable").querySelector("tbody").innerHTML = corpora.map((c) =>
-    `<tr><td>${esc(c.name)}</td><td>${c.frames ?? "?"}</td><td>${c.fps ?? "?"}</td><td class="mono">${esc(c.image_root || "(local)")}</td></tr>`).join("")
-    || `<tr><td colspan="4" class="muted">No corpora in ${esc(state.config.corpus_dir)}</td></tr>`;
+    `<tr><td>${esc(c.name)}</td><td class="num">${c.frames ?? "?"}</td><td class="num">${c.fps ?? "?"}</td><td class="mono">${esc(c.image_root || "(local)")}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">No corpora yet in <span class="mono">${esc(state.config.corpus_dir)}</span>. Upload a video above to make one.</td></tr>`;
   const options = corpora.map((c) => `<option>${esc(c.name)}</option>`).join("");
-  $("runCorpus").innerHTML = options || "<option value=''>(no corpus)</option>";
+  const runCorpus = $("runCorpus").value, camCorpus = $("camCorpus").value;
+  $("runCorpus").innerHTML = options || "<option value=''>(no corpus yet)</option>";
   $("camCorpus").innerHTML = "<option value=''>(none)</option>" + options;
+  if (runCorpus) $("runCorpus").value = runCorpus;
+  if (camCorpus) $("camCorpus").value = camCorpus;
+  updateSetupSummary();
 }
 
 async function refreshCameras() {
   $("camError").textContent = "";
   try {
     const cameras = await api("/api/video-cameras");
+    state.cameraCount = cameras.length;
     $("camerasTable").querySelector("tbody").innerHTML = cameras.map((c) =>
       `<tr><td>${esc(c.name)}<div class="muted">${esc(c.description || "")}</div></td><td class="mono">${esc(c.id)}</td>
-       <td><button data-use="${esc(c.id)}">Use</button> <button class="danger" data-remove="${esc(c.id)}">Remove</button></td></tr>`).join("")
-      || `<tr><td colspan="3" class="muted">No video cameras yet.</td></tr>`;
+       <td style="white-space:nowrap"><button data-use="${esc(c.id)}" data-name="${esc(c.name)}" aria-label="Use ${esc(c.name)} as the template camera">Use</button>
+       <button class="danger" data-remove="${esc(c.id)}" data-name="${esc(c.name)}" aria-label="Remove ${esc(c.name)}">Remove…</button></td></tr>`).join("")
+      || `<tr><td colspan="3" class="muted">No video cameras yet. Add one below from a corpus.</td></tr>`;
+    $("cameraList").innerHTML = cameras.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
   } catch (error) {
     $("camerasTable").querySelector("tbody").innerHTML = "";
     $("camError").textContent = `Cannot list video cameras: ${error.message}`;
   }
+  updateSetupSummary();
 }
 
-// ------------------------------------------------------------------ actions
-async function startJob(action, params, errorEl) {
-  $(errorEl).textContent = "";
-  try {
-    const job = await post("/api/jobs", { action, params });
-    selectJob(job.id);
-    if (job.kind === "run") {
-      state.runJobId = job.id; state.metricsNext = 0; state.snapshots = []; showMode("live");
-      const target = state.logs.targets.find((t) => params.workers.includes(t.worker));
-      if (target) followLogs(target.worker).catch(() => {});
-    }
-    await refreshJobs();
-    return job;
-  } catch (error) { $(errorEl).textContent = error.message; }
+function updateSetupSummary() {
+  const c = state.corpusCount, v = state.cameraCount;
+  $("setupSummary").textContent = `${c} ${c === 1 ? "corpus" : "corpora"} · ${v} video ${v === 1 ? "camera" : "cameras"}`;
 }
 
+// ------------------------------------------------------------------ load test form
 function testParams() {
   return {
     workers: [...$("workers").querySelectorAll("input:checked")].map((i) => i.value),
@@ -287,72 +553,347 @@ function testParams() {
   };
 }
 
+function saveForm() {
+  const p = testParams();
+  try {
+    localStorage.setItem(FORM_KEY, JSON.stringify({ workers: p.workers, server_ip: p.server_ip, scenario: p.scenario, template_camera: p.template_camera,
+      source: p.source, corpus: p.corpus, overrides: $("overrides").value, sizing: p.sizing, keep_events: p.keep_events }));
+  } catch (error) { /* storage unavailable: the form still works */ }
+}
+
+function restoreForm() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(FORM_KEY) || "null"); } catch (error) { saved = null; }
+  const boxes = [...$("workers").querySelectorAll("input")];
+  if (!saved) { if (boxes.length === 1) boxes[0].checked = true; return; }
+  for (const box of boxes) box.checked = (saved.workers || []).includes(box.value);
+  if (saved.server_ip !== undefined) $("serverIp").value = saved.server_ip;
+  if (SCENARIOS[saved.scenario]) $("scenario").value = saved.scenario;
+  if (["per_stage", "fixed"].includes(saved.sizing)) $("sizing").value = saved.sizing;
+  if (saved.template_camera) $("templateCamera").value = saved.template_camera;
+  const radio = document.querySelector(`input[name=source][value="${saved.source === "live" ? "live" : "corpus"}"]`);
+  if (radio) radio.checked = true;
+  if (saved.corpus && [...$("runCorpus").options].some((o) => o.value === saved.corpus)) $("runCorpus").value = saved.corpus;
+  if (typeof saved.overrides === "string") $("overrides").value = saved.overrides;
+  $("keepEvents").checked = !!saved.keep_events;
+}
+
+function updateScenarioHelp() {
+  const type = $("scenario").value;
+  $("scenarioHelp").textContent = SCENARIOS[type].text;
+  $("overridesHelp").innerHTML = `Defaults for ${esc(type)}: <code>${esc(SCENARIOS[type].keys)}</code>. Also <code>fps_per_camera</code>, <code>settle_s</code>, `
+    + `<code>saturation.max_staleness_s</code>, <code>guard.max_real_staleness_increase_s</code>.`;
+  const allowed = state.config && state.config.environment === "staging" && type === "throughput";
+  $("noGuard").disabled = !allowed;
+  if (!allowed) $("noGuard").checked = false;
+  $("noGuardLabel").classList.toggle("disabled", !allowed);
+  $("noGuardHelp").textContent = allowed
+    ? "No guard turns off the real-camera guard: real cameras can fall behind during the ramp."
+    : "No guard is only allowed for throughput scenarios in staging.";
+}
+
+function overrideProblem() {
+  const lines = $("overrides").value.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const at = line.indexOf("=");
+    if (at < 1 || !SET_KEY.test(line.slice(0, at).trim())) return `Line ${i + 1} is not key=value: ${line}`;
+    if (line.slice(at + 1).length > 200) return `Line ${i + 1}: the value is longer than 200 characters.`;
+  }
+  return "";
+}
+
+function checkUuidField(id, msgId, label) {
+  const field = $(id), value = field.value.trim();
+  const bad = value && !UUID_RE.test(value);
+  field.setAttribute("aria-invalid", bad ? "true" : "false");
+  $(msgId).textContent = bad ? `${label} must be a camera id like 7797ee15-32d5-46b7-b736-ac078e9b9b8c.` : "";
+  return bad ? $(msgId).textContent : "";
+}
+
+function validateForm() {
+  const p = testParams();
+  const problems = [];
+  if (!p.workers.length) problems.push("Pick at least one worker.");
+  const template = checkUuidField("templateCamera", "templateMsg", "Template camera");
+  if (template) problems.push(template);
+  const overrides = overrideProblem();
+  $("overrides").setAttribute("aria-invalid", overrides ? "true" : "false");
+  $("overridesMsg").textContent = overrides;
+  if (overrides) problems.push(overrides);
+  if (p.source === "corpus" && !p.corpus) problems.push("Create a corpus first (Setup), or take frames from a live camera.");
+  return problems[0] || "";
+}
+
+function openRunDialog() {
+  if ($("runBtn").disabled) return;
+  const problem = validateForm();
+  $("runError").textContent = problem;
+  if (problem) return;
+  const p = testParams();
+  const env = state.config.environment, prod = env === "production";
+  $("runDialogEnv").textContent = prod ? "Production: synthetic load on live cameras and GPUs" : `Environment: ${env}`;
+  const rows = [
+    ["Workers", p.workers.join(", ")],
+    ["Scenario", `${p.scenario}. ${SCENARIOS[p.scenario].text}`],
+    ["Model sizing", p.sizing === "per_stage" ? "per stage" : "fixed"],
+    ["Frames from", p.source === "corpus" ? `corpus ${p.corpus}` : "live camera"],
+    ["Template camera", p.template_camera || "freshest real camera"],
+    ["Server IP", p.server_ip || "from config"],
+    ["Real-camera guard", p.no_guard ? "OFF (no guard)" : "on"],
+    ["Events", p.keep_events ? "kept" : "removed after the run"],
+    ["Overrides", p.set.length ? p.set.join("\n") : "none"],
+  ];
+  $("runSummary").innerHTML = rows.map(([k, v]) =>
+    `<dt>${esc(k)}</dt><dd${k === "Overrides" && p.set.length ? ' class="mono" style="white-space:pre-line"' : ""}${k === "Real-camera guard" && p.no_guard ? ' class="bad-text"' : ""}>${esc(v)}</dd>`).join("");
+  $("prodAckRow").hidden = !prod;
+  $("prodAck").checked = false;
+  $("runConfirm").disabled = prod;
+  $("runDialog").returnValue = "";
+  $("runDialog").showModal();
+  (prod ? $("prodAck") : $("runConfirm")).focus();
+}
+
+$("prodAck").onchange = () => { $("runConfirm").disabled = !$("prodAck").checked; };
+$("runDialog").addEventListener("close", () => {
+  if ($("runDialog").returnValue === "run") startJob("run", testParams(), "runError");
+  else $("runBtn").focus();
+});
+$("runBtn").onclick = openRunDialog;
+$("checkBtn").onclick = () => {
+  const problem = validateForm();
+  $("runError").textContent = problem;
+  if (!problem) startJob("check", testParams(), "runError", { el: "runNote", label: "Check" });
+};
+$("loadForm").addEventListener("submit", (e) => e.preventDefault());
+$("loadForm").addEventListener("change", saveForm);
+$("loadForm").addEventListener("input", saveForm);
+$("scenario").addEventListener("change", updateScenarioHelp);
+$("overrides").addEventListener("input", () => {
+  const problem = overrideProblem();
+  $("overrides").setAttribute("aria-invalid", problem ? "true" : "false");
+  $("overridesMsg").textContent = problem;
+});
+$("templateCamera").addEventListener("change", () => checkUuidField("templateCamera", "templateMsg", "Template camera"));
+$("camLike").addEventListener("change", () => checkUuidField("camLike", "camLikeMsg", "Region camera"));
+$("camZones").addEventListener("change", () => checkUuidField("camZones", "camZonesMsg", "Zones camera"));
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !$("runDialog").open) { e.preventDefault(); openRunDialog(); }
+});
+
+// ------------------------------------------------------------------ actions
+async function startJob(action, params, errorEl, note) {
+  $(errorEl).textContent = "";
+  try {
+    const job = await post("/api/jobs", { action, params });
+    selectJob(job.id, job);
+    if (note) setNote(job.id, note.el, note.label);
+    if (job.kind === "run") {
+      Object.assign(state, { runJobId: job.id, runJob: job, runId: "", stopping: false, metricsNext: 0, snapshots: [], live: {},
+                             liveModel: null, liveResult: null, liveAborted: false, resultFor: null, viewing: null, viewModel: null });
+      showMode("live");
+      const target = state.logs.targets.find((t) => params.workers.includes(t.worker));
+      if (target) followLogs(target.worker).catch(() => {});
+    }
+    await refreshJobs();
+    updateRunBar();
+    return job;
+  } catch (error) { $(errorEl).textContent = error.message; }
+}
+
+function setNote(jobId, el, label) {
+  for (const [id, note] of Object.entries(state.notes)) if (note.el === el) delete state.notes[id];
+  state.notes[jobId] = { el, label, running: true };
+  renderNotes();
+}
+
+function renderNotes() {
+  for (const [id, note] of Object.entries(state.notes)) {
+    const job = state.jobs.find((j) => j.id === id);
+    if (!job) { $(note.el).textContent = `${note.label}: started…`; continue; }
+    const [status, cls] = jobStatus(job);
+    $(note.el).innerHTML = `${esc(note.label)}: <span class="${cls}">${esc(status)}</span> · <button class="link" data-show-job="${esc(id)}">Show output</button>`;
+    if (note.running && !job.running) announce(`${note.label} ${status}`);
+    note.running = job.running;
+  }
+}
+
+function showOutput(id) {
+  selectJob(id);
+  $("outputPanel").scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
+  $("console").focus({ preventScroll: true });
+}
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-show-job]"); if (b) showOutput(b.dataset.showJob); });
+
+let uploadXhr = null;
 $("uploadBtn").onclick = () => {
   const file = $("videoFile").files[0];
   $("corpusError").textContent = "";
-  if (!file) { $("corpusError").textContent = "Choose a video file first"; return; }
+  if (!file) { $("corpusError").textContent = "Choose a video file first."; return; }
   const name = file.name.replace(/[^A-Za-z0-9 _.\-]/g, "_");
   const xhr = new XMLHttpRequest();
-  const bar = $("uploadProgress");
-  bar.hidden = false; bar.value = 0;
-  xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = (100 * e.loaded) / e.total; };
+  const bar = $("uploadProgress"), status = $("uploadStatus");
+  const done = () => { bar.hidden = true; $("uploadCancel").hidden = true; $("uploadBtn").disabled = false; uploadXhr = null; };
+  uploadXhr = xhr;
+  bar.hidden = false; bar.value = 0; $("uploadCancel").hidden = false; $("uploadBtn").disabled = true;
+  status.textContent = `Uploading ${name} (${fmtBytes(file.size)})`;
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    bar.value = (100 * e.loaded) / e.total;
+    status.textContent = `Uploading ${name} (${fmtBytes(file.size)}) · ${Math.floor(bar.value)}%`;
+  };
   xhr.onload = async () => {
-    bar.hidden = true;
-    if (xhr.status !== 200) { $("corpusError").textContent = (JSON.parse(xhr.responseText || "{}").error) || "Upload failed"; return; }
+    done();
+    if (xhr.status !== 200) {
+      let message = `Upload failed (HTTP ${xhr.status})`;
+      try { message = JSON.parse(xhr.responseText || "{}").error || message; } catch (error) { /* not JSON */ }
+      status.textContent = ""; $("corpusError").textContent = message; return;
+    }
+    status.textContent = `Uploaded ${name}.`;
     await refreshUploads();
     $("uploadedVideo").value = name;
     if (!$("corpusName").value) $("corpusName").value = name.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_.\-]/g, "-").toLowerCase();
   };
-  xhr.onerror = () => { bar.hidden = true; $("corpusError").textContent = "Upload failed"; };
+  xhr.onerror = () => { done(); status.textContent = ""; $("corpusError").textContent = "Upload failed: the connection dropped."; };
+  xhr.onabort = () => { done(); status.textContent = "Upload cancelled."; };
   xhr.open("POST", `/api/videos?name=${encodeURIComponent(name)}`);
   xhr.send(file);
 };
+$("uploadCancel").onclick = () => { if (uploadXhr) uploadXhr.abort(); };
 
 $("corpusBtn").onclick = () => startJob("corpus", {
   video: $("uploadedVideo").value, name: $("corpusName").value.trim(), fps: $("corpusFps").value,
   max_seconds: $("corpusMax").value, image_root: $("imageRoot").value.trim(), copy_target: $("copyTarget").value.trim(),
-}, "corpusError");
+}, "corpusError", { el: "corpusNote", label: "Create corpus" });
 
-$("camAddBtn").onclick = () => startJob("video-camera-add", {
-  name: $("camName").value.trim(), like: $("camLike").value.trim(), zones_from: $("camZones").value.trim(), corpus: $("camCorpus").value,
-}, "camError");
+$("camAddBtn").onclick = () => {
+  const problem = checkUuidField("camLike", "camLikeMsg", "Region camera") || checkUuidField("camZones", "camZonesMsg", "Zones camera");
+  if (!$("camLike").value.trim()) { $("camError").textContent = "Enter the camera id to copy region and timezone from."; return; }
+  if (problem) return;
+  startJob("video-camera-add", {
+    name: $("camName").value.trim(), like: $("camLike").value.trim(), zones_from: $("camZones").value.trim(), corpus: $("camCorpus").value,
+  }, "camError", { el: "camNote", label: "Add video camera" });
+};
 $("camRefreshBtn").onclick = refreshCameras;
 $("camerasTable").onclick = (e) => {
-  const use = e.target.dataset.use, remove = e.target.dataset.remove;
-  if (use) { $("templateCamera").value = use; }
-  if (remove && confirm("Delete this video camera and its zones?")) startJob("video-camera-remove", { camera_id: remove }, "camError");
+  const button = e.target.closest("button");
+  if (!button) return;
+  const { use, remove, name } = button.dataset;
+  if (use) {
+    const field = $("templateCamera");
+    field.value = use;
+    checkUuidField("templateCamera", "templateMsg", "Template camera");
+    saveForm();
+    field.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+    field.focus({ preventScroll: true });
+    field.classList.remove("flash"); void field.offsetWidth; field.classList.add("flash");
+    announce(`Template camera set to ${name}`);
+  }
+  if (remove && confirm(`Delete the video camera "${name}" and its zones?`)) {
+    startJob("video-camera-remove", { camera_id: remove }, "camError", { el: "camNote", label: `Remove ${name}` });
+  }
 };
 
-$("checkBtn").onclick = () => startJob("check", testParams(), "runError");
-$("runBtn").onclick = () => startJob("run", testParams(), "runError");
 $("stopBtn").onclick = async () => {
   if (!state.runJobId) return;
-  await post(`/api/jobs/${state.runJobId}/stop`, {});
-  $("stopBtn").disabled = true;
+  state.stopping = true;
+  updateRunBar();
+  try { await post(`/api/jobs/${state.runJobId}/stop`, {}); }
+  catch (error) { state.stopping = false; $("runError").textContent = `Stop failed: ${error.message}`; }
+  await refreshJobs();
+  updateRunBar();
 };
-$("orphansBtn").onclick = () => startJob("cleanup-orphans", {}, "runError");
-$("orphansYesBtn").onclick = () => confirm("Remove every leftover synthetic camera and region?") && startJob("cleanup-orphans", { yes: true }, "runError");
+$("orphansBtn").onclick = () => startJob("cleanup-orphans", {}, "cleanupError", { el: "cleanupNote", label: "List leftovers" });
+$("orphansYesBtn").onclick = () => confirm("Remove every leftover synthetic camera and region?")
+  && startJob("cleanup-orphans", { yes: true }, "cleanupError", { el: "cleanupNote", label: "Remove leftovers" });
+$("retryBtn").onclick = () => location.reload();
 
 // ------------------------------------------------------------------ jobs & output
-async function refreshJobs() {
-  const jobs = await api("/api/jobs");
-  $("jobsTable").querySelector("tbody").innerHTML = jobs.slice(0, 12).map((j) => {
-    const status = j.running ? (j.stop_requested ? "stopping…" : "running") : (j.returncode === 0 ? "done" : `exit ${j.returncode}`);
-    const cls = j.running ? "warn-text" : (j.returncode === 0 ? "ok-text" : "bad-text");
-    return `<tr class="clickable" data-job="${esc(j.id)}"><td class="mono">${esc(j.id)}</td><td class="mono">${esc(j.argv.slice(0, 3).join(" "))}</td><td class="${cls}">${status}</td></tr>`;
-  }).join("");
-  const run = jobs.find((j) => j.kind === "run");
-  if (run && !state.runJobId) state.runJobId = run.id;
-  const active = jobs.find((j) => j.id === state.runJobId);
-  $("stopBtn").disabled = !(active && active.running && !active.stop_requested);
-  $("runBtn").disabled = !!jobs.find((j) => (j.kind === "run" || j.kind === "cleanup") && j.running);
+function describeJob(job) {
+  const a = job.argv || [];
+  const values = (flag) => a.flatMap((x, i) => (x === flag ? [a[i + 1]] : []));
+  if (job.kind === "run" || job.kind === "check") return [values("--scenario")[0], values("--worker").join(", ")].filter(Boolean).join(" · ");
+  if (job.kind === "corpus") return values("--name")[0] || "";
+  if (job.kind === "video-camera") return a[1] === "remove" ? `remove ${String(a[2] || "").slice(0, 8)}…` : `add ${values("--name")[0] || ""}`;
+  if (job.kind === "cleanup") return a.includes("--run-id") ? `run ${values("--run-id")[0]}` : a.includes("--yes") ? "remove leftovers" : "list leftovers";
+  return a.slice(0, 3).join(" ");
 }
-$("jobsTable").onclick = (e) => { const row = e.target.closest("tr[data-job]"); if (row) selectJob(row.dataset.job); };
+function jobStatus(job) {
+  if (job.running) return job.stop_requested ? ["stopping…", "warn-text"] : ["running", "warn-text"];
+  return job.returncode === 0 ? ["done", "ok-text"] : [`failed (exit ${job.returncode})`, "bad-text"];
+}
 
-function selectJob(id) {
+async function refreshJobs() {
+  let jobs;
+  try { jobs = await api("/api/jobs"); } catch (error) { return; }
+  state.jobs = jobs;
+  for (const job of jobs) {
+    if (job.running || !["corpus", "video-camera"].includes(job.kind) || state.refreshed.has(job.id)) continue;
+    state.refreshed.add(job.id);
+    if (state.jobsLoaded) { refreshCorpora().catch(() => {}); refreshCameras(); refreshUploads().catch(() => {}); }
+  }
+  state.jobsLoaded = true;
+  $("jobsTable").querySelector("tbody").innerHTML = jobs.slice(0, 12).map((j) => {
+    const [status, cls] = jobStatus(j);
+    return `<tr${j.id === state.jobId ? ' aria-current="true"' : ""}><td><button class="link mono" data-show-job="${esc(j.id)}" aria-label="Show output of ${esc(KIND[j.kind] || j.kind)} job ${esc(j.id)}">${esc(j.id)}</button></td>
+      <td title="${esc((j.argv || []).join(" "))}">${esc(KIND[j.kind] || j.kind)} <span class="muted">${esc(describeJob(j))}</span></td><td class="${cls}">${esc(status)}</td></tr>`;
+  }).join("") + (jobs.length > 12 ? `<tr><td colspan="3" class="muted">Showing the 12 newest of ${jobs.length} jobs.</td></tr>` : "")
+    || `<tr><td colspan="3" class="muted">No jobs yet in this session.</td></tr>`;
+
+  const latestRun = jobs.find((j) => j.kind === "run");
+  if (latestRun && !state.runJobId) state.runJobId = latestRun.id;
+  const active = jobs.find((j) => j.id === state.runJobId) || null;
+  if (active) state.runJob = active;
+  if (active && !active.running) { state.stopping = false; if (state.resultFor !== (active.run_id || active.id)) loadLiveResult(active); }
+
+  const busy = jobs.some((j) => (j.kind === "run" || j.kind === "cleanup") && j.running);
+  const runRunning = jobs.some((j) => j.kind === "run" && j.running);
+  const prodBlocked = state.config && state.config.environment === "production" && !state.config.allow_production;
+  $("runBtn").disabled = busy || prodBlocked;
+  $("orphansYesBtn").disabled = runRunning;
+  $("runBlocked").hidden = !(busy || prodBlocked);
+  $("runBlocked").textContent = prodBlocked ? "Run is off: this UI was started without --allow-production."
+    : busy ? "Run is available again when the current run or cleanup ends." : "";
+  if (state.jobId && !$("jobTitle").textContent) titleJob(state.jobId);
+  renderNotes();
+}
+
+async function loadLiveResult(job) {
+  if (!job.run_id) {
+    state.resultFor = job.id;
+    state.liveResult = job.returncode === 0 ? null
+      : { tone: "bad", headline: `Run failed before it started (exit ${job.returncode})`, lines: ["See Output for the error."] };
+  } else {
+    try {
+      const { summary } = await api(`/api/runs/${encodeURIComponent(job.run_id)}`);
+      state.liveResult = resultFromSummary(summary);
+      state.liveAborted = !!summary.aborted;
+      state.resultFor = job.run_id;
+    } catch (error) {
+      if (job.returncode === 0) return;  // summary not written yet: try again on the next poll
+      state.liveResult = { tone: "bad", headline: `Run failed (exit ${job.returncode})`, lines: ["See Output for the error."] };
+      state.resultFor = job.run_id;
+    }
+  }
+  if (state.mode === "live" && !state.viewing) showCurrentView();
+  updateRunBar();
+}
+
+function titleJob(id) {
+  const job = state.jobs.find((j) => j.id === id);
+  $("jobTitle").innerHTML = job ? `${esc(KIND[job.kind] || job.kind)} · ${esc(describeJob(job))} <span class="mono">${esc(id)}</span>` : `<span class="mono">${esc(id)}</span>`;
+}
+
+function selectJob(id, job) {
   state.jobId = id; state.offset = 0;
   $("console").innerHTML = "";
-  $("jobTitle").textContent = id;
+  if (job && !state.jobs.some((j) => j.id === id)) state.jobs.unshift(job);
+  titleJob(id);
+  for (const row of $("jobsTable").querySelectorAll("tbody tr")) {
+    const b = row.querySelector("[data-show-job]");
+    if (b) row.setAttribute("aria-current", b.dataset.showJob === id ? "true" : "false");
+  }
 }
 
 function colorize(text) {
@@ -376,32 +917,97 @@ async function tick() {
         if (atBottom) el.scrollTop = el.scrollHeight;
       }
       state.offset = job.offset;
-      if (!job.running && ["corpus", "video-camera"].includes(job.kind) && !job._refreshed) {
-        refreshCorpora(); refreshCameras(); refreshUploads();
-      }
-    } catch (error) { /* job list will show it */ }
+    } catch (error) { /* the jobs list shows failures */ }
   }
+  await refreshJobs();
   if (state.logs.following) await pollLogs();
-  if (state.runJobId && state.mode === "live") {
+  if (state.runJobId) {
     try {
       const data = await api(`/api/jobs/${state.runJobId}/metrics?since=${state.metricsNext}`);
       state.snapshots.push(...data.snapshots);
       state.metricsNext = data.next;
-      if (state.snapshots.length) renderLive(data.run_id);
-    } catch (error) { /* run not started */ }
+      if (data.run_id) state.runId = data.run_id;
+      if (data.snapshots.length) renderLive();
+    } catch (error) { /* run not started yet */ }
   }
+  updateRunBar();
+}
+
+// ------------------------------------------------------------------ run bar
+function runState() {
+  const job = state.runJob;
+  if (!job) return "idle";
+  if (job.running) return (job.stop_requested || state.stopping) ? "stopping" : (state.snapshots.length ? "running" : "starting");
+  if (job.returncode !== 0) return "failed";
+  return state.liveAborted ? "aborted" : "done";
+}
+
+function updateRunBar() {
+  const s = runState(), job = state.runJob;
+  $("runbar").dataset.state = s;
+  const ended = job && !job.running;
+  $("runStateText").textContent = s === "idle" ? "Idle" : ended ? `Last run: ${STATE_TEXT[s].toLowerCase()}` : STATE_TEXT[s];
+  const meta = [];
+  if (!job) meta.push("No run in this session.");
+  else {
+    if (state.runId || job.run_id) meta.push(`Run <b>${esc(state.runId || job.run_id)}</b>`);
+    const what = describeJob(job);
+    if (what) meta.push(esc(what));
+    if (!ended && state.live.stage) meta.push(`Stage <b>${esc(state.live.stage)}</b>`);
+    if (!ended && state.live.cameras !== undefined && state.live.cameras !== null) meta.push(`<b>${num(state.live.cameras, 0)}</b> synthetic cameras`);
+    if (job.started_at) meta.push(`<b>${fmtElapsed((job.ended_at || Date.now() / 1000) - job.started_at)}</b> ${ended ? "total" : "elapsed"}`);
+  }
+  $("runMeta").innerHTML = meta.map((m) => `<span>${m}</span>`).join("");
+  const stop = $("stopBtn");
+  stop.hidden = !(s === "running" || s === "starting" || s === "stopping");
+  stop.disabled = s === "stopping";
+  stop.textContent = s === "stopping" ? "Stopping…" : "Stop run";
+  const prod = state.config && state.config.environment === "production" ? "[PROD] " : "";
+  document.title = s === "idle" || ended ? `${prod}vision-loadgen` : `${prod}${STATE_TEXT[s]}${state.live.stage ? ` · ${state.live.stage}` : ""} · vision-loadgen`;
+  if (state.lastRunState !== null && state.lastRunState !== s) {
+    const said = { starting: "Run starting.", running: "Run is live.", stopping: "Stopping the run.", done: "Run finished.", aborted: "Run aborted by the guard.", failed: "Run failed." }[s];
+    if (said) announce(said);
+  }
+  state.lastRunState = s;
 }
 
 // ------------------------------------------------------------------ charts
+function themeCharts() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
+  COLORS = [1, 2, 3, 4, 5, 6].map((i) => v(`--s${i}`));
+  LIMIT_COLOR = v("--bad");
+  THEME.line = v("--line"); THEME.muted = v("--muted");
+  Chart.defaults.color = THEME.muted;
+  Chart.defaults.borderColor = THEME.line;
+  Chart.defaults.font.family = v("--sans");
+  Chart.defaults.font.size = 11;
+}
+// Chart.js resolves colours when a chart is built, so a theme switch restyles each chart explicitly.
+function styleChart(chart) {
+  for (const scale of Object.values(chart.options.scales)) {
+    scale.grid = { ...(scale.grid || {}), color: THEME.line };
+    scale.border = { ...(scale.border || {}), color: THEME.line };
+    scale.ticks = { ...(scale.ticks || {}), color: THEME.muted };
+    if (scale.title) scale.title.color = THEME.muted;
+  }
+  chart.options.plugins.legend.labels.color = THEME.muted;
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  themeCharts();
+  for (const chart of Object.values(state.charts)) { styleChart(chart); chart.update("none"); }
+  if (state.lastModel) renderModel(state.lastModel);
+});
+
 function makeCharts() {
-  const base = (stacked) => ({
+  const base = () => ({
     type: "line", data: { labels: [], datasets: [] },
     options: {
       animation: false, responsive: true, maintainAspectRatio: false, spanGaps: false,
       interaction: { mode: "index", intersect: false },
       scales: { x: { type: "linear", title: { display: true, text: "seconds" }, ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } },
       elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.15 } },
-      plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } } },
+      plugins: { legend: { labels: { boxWidth: 10 } } },
     },
   });
   for (const [key, id] of [["staleness", "cStaleness"], ["lag", "cLag"], ["excess", "cExcess"], ["load", "cLoad"], ["stages", "cStages"]]) {
@@ -409,9 +1015,14 @@ function makeCharts() {
   }
   state.charts.excess.options.scales.y.beginAtZero = false;
   state.charts.load.options.scales.y1 = { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: "frames/s" } };
+  for (const chart of Object.values(state.charts)) styleChart(chart);
 }
 
-function setChart(chart, x, series) {
+function setChart(chart, x, series, live) {
+  const hasData = series.some((s) => !s.reference && s.values.some((v) => v !== null && v !== undefined));
+  const box = chart.canvas.parentElement;
+  box.classList.toggle("nodata", !hasData);
+  box.dataset.empty = live ? "No samples yet." : "No samples in this run.";
   chart.data.datasets = series.map((s, i) => ({
     label: s.label, data: x.map((xv, j) => ({ x: xv, y: s.values[j] ?? null })),
     borderColor: s.color || COLORS[i % COLORS.length], backgroundColor: s.color || COLORS[i % COLORS.length],
@@ -420,29 +1031,100 @@ function setChart(chart, x, series) {
   chart.update("none");
 }
 
+// ------------------------------------------------------------------ run view
+function resultFromSummary(summary) {
+  const verdicts = (summary.stages || []).flatMap((stage) => Object.values(stage.workers || {}).map((w) => w.verdict).filter(Boolean));
+  const kept = verdicts.filter((v) => v.kept_up).length;
+  const lines = Object.entries(summary.throughput || {}).map(([w, t]) => `${w} sustained ${t.max_sustained_cameras ?? "–"} cameras`);
+  if (verdicts.length) lines.push(`${kept} of ${verdicts.length} stage verdicts kept up`);
+  const teardown = (summary.teardown || {}).errors || [];
+  lines.push(teardown.length ? `Teardown had ${teardown.length} error(s); run Cleanup` : "Teardown clean");
+  if (summary.error) return { tone: "bad", headline: `Error: ${summary.error}`, lines };
+  if (summary.aborted) return { tone: "warn", headline: `Aborted: ${summary.aborted}`, lines };
+  const tp = Object.entries(summary.throughput || {});
+  const headline = tp.length ? `Max sustained: ${tp.map(([w, t]) => `${w} ${t.max_sustained_cameras ?? "–"} cameras`).join(", ")}`
+    : !verdicts.length ? "Completed without stage verdicts"
+    : kept === verdicts.length ? "Completed: every stage kept up" : `Completed: ${verdicts.length - kept} of ${verdicts.length} stage verdicts fell behind`;
+  return { tone: !tp.length && (!verdicts.length || kept < verdicts.length) ? "warn" : "ok", headline, lines };
+}
+
+function buildNow(workers, staleness, lag, processed, verdicts) {
+  const series = (list, w) => (list.find((s) => s.label === w) || { values: [] }).values;
+  return workers.map((w) => ({
+    worker: w, stale: lastOf(series(staleness, w)), lag: lastOf(series(lag, w)), proc: lastOf(series(processed, w)),
+    kept: verdicts.filter((v) => v.worker === w && v.kept).length, total: verdicts.filter((v) => v.worker === w).length,
+  }));
+}
+
+function meter(value, limit) {
+  if (value === null) return "–";
+  if (!limit) return `<span class="meter-text">${num(value, 2)} s</span>`;
+  const ratio = value / limit;
+  const tone = ratio >= 1 ? "bad" : ratio >= 0.7 ? "warn" : "ok";
+  return `<div class="meter ${tone}"><span class="meter-text">${num(value, 2)} s <span class="muted">of ${num(limit, 1)} s</span>${ratio >= 1 ? " · over limit" : ""}</span>`
+    + `<span class="meter-track" aria-hidden="true"><span style="width:${Math.min(ratio, 1) * 100}%"></span></span></div>`;
+}
+
+function renderResult(result) {
+  const el = $("result");
+  el.hidden = !result;
+  if (!result) return;
+  el.className = `result ${result.tone}`;
+  el.innerHTML = `<p class="result-head">${esc(result.headline)}</p>${result.lines.length ? `<ul>${result.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}`;
+}
+
+function showCurrentView() {
+  if (state.viewing && state.viewModel) return renderModel(state.viewModel);
+  if (state.liveModel) return renderModel(state.liveModel);
+  $("backToRun").hidden = true;
+  $("abortBanner").hidden = true;
+  $("liveBody").hidden = true;
+  $("liveEmpty").hidden = false;
+  const s = runState();
+  $("viewTitle").textContent = s === "starting" ? "Starting run" : state.runJob ? "Last run" : "No run yet";
+  $("liveEmpty").innerHTML = s === "starting" ? "Starting the run: registering synthetic cameras and waiting for the first metrics sample."
+    : state.runJob && !state.runJob.running ? "This run produced no metrics samples. The result and Output say why."
+    : "Choose workers and a scenario, then press Run (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Charts and verdicts appear here once the first sample arrives.";
+  renderResult(state.runJob && !state.runJob.running ? state.liveResult : null);
+}
+
 function renderModel(model) {
-  setChart(state.charts.staleness, model.x, [...model.staleness, model.limit && { label: "keep-up limit", values: model.x.map(() => model.limit), color: "#c8372d", dash: true }].filter(Boolean));
-  setChart(state.charts.lag, model.x, model.lag);
-  setChart(state.charts.excess, model.x, [...model.excess, model.guard && { label: "guard limit", values: model.x.map(() => model.guard), color: "#c8372d", dash: true }].filter(Boolean));
-  setChart(state.charts.load, model.x, [
-    { label: "synthetic cameras", values: model.cameras, stepped: true },
-    { label: "published", values: model.rate, axis: "y1", color: "#1a8f4c" },
-    ...model.processed.map((p, i) => ({ label: `processed (${p.label})`, values: p.values, axis: "y1", dash: true,
-                                        color: COLORS[(3 + i) % COLORS.length] })),
-  ]);
-  setChart(state.charts.stages, model.x, model.stages);
+  state.lastModel = model;
+  $("liveEmpty").hidden = true;
+  $("liveBody").hidden = false;
+  $("viewTitle").textContent = model.title;
+  $("backToRun").hidden = !state.viewing;
+  $("backToRun").textContent = state.runJob ? "Back to the current run" : "Close this past run";
   $("abortBanner").hidden = !model.aborted;
   $("abortBanner").textContent = model.aborted ? `Aborted: ${model.aborted}` : "";
+  renderResult(model.live ? (state.runJob && !state.runJob.running ? state.liveResult : null) : model.result);
+
+  $("nowCaption").textContent = model.live ? "Latest sample per worker" : "End of run per worker";
+  $("nowTable").querySelector("tbody").innerHTML = model.now.map((r) =>
+    `<tr><th scope="row">${esc(r.worker)}</th><td>${meter(r.stale, model.limit)}</td><td class="num">${num(r.lag, 0)}</td>`
+    + `<td class="num">${r.proc === null ? "–" : `${num(r.proc)} /s`}</td><td class="num">${r.total ? `${r.kept} of ${r.total}` : "–"}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted">No worker samples yet.</td></tr>`;
+  $("facts").innerHTML = model.facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
   $("verdicts").querySelector("tbody").innerHTML = model.verdicts.map((v) =>
-    `<tr><td>${esc(v.index)}</td><td>${esc(v.stage)}</td><td>${esc(v.worker)}</td><td><span class="${v.kept ? "ok-text" : "bad-text"}">${v.kept ? "kept up" : esc(v.reason || "fell behind")}</span>${v.hint ? `<div class="verdict-hint">${esc(v.hint)}</div>` : ""}</td><td>${num(v.p95, 2)}</td></tr>`).join("")
+    `<tr><td class="num">${esc(v.index)}</td><td>${esc(v.stage)}</td><td>${esc(v.worker)}</td><td><span class="${v.kept ? "ok-text" : "bad-text"}">${v.kept ? "kept up" : esc(v.reason || "fell behind")}</span>`
+    + `${v.hint ? `<div class="verdict-hint">${esc(v.hint)}</div>` : ""}</td><td class="num">${num(v.p95, 2)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="muted">Verdicts appear as each stage ends.</td></tr>`;
-  $("tiles").innerHTML = model.tiles.map(([k, v]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+
+  setChart(state.charts.staleness, model.x, [...model.staleness, model.limit && { label: "keep-up limit", values: model.x.map(() => model.limit), color: LIMIT_COLOR, dash: true, reference: true }].filter(Boolean), model.live);
+  setChart(state.charts.lag, model.x, model.lag, model.live);
+  setChart(state.charts.excess, model.x, [...model.excess, model.guard && { label: "guard limit", values: model.x.map(() => model.guard), color: LIMIT_COLOR, dash: true, reference: true }].filter(Boolean), model.live);
+  setChart(state.charts.load, model.x, [
+    { label: "synthetic cameras", values: model.cameras, stepped: true, color: COLORS[0] },
+    { label: "published", values: model.rate, axis: "y1", color: COLORS[2] },
+    ...model.processed.map((p, i) => ({ label: `processed (${p.label})`, values: p.values, axis: "y1", dash: true, color: COLORS[(3 + i) % COLORS.length] })),
+  ], model.live);
+  setChart(state.charts.stages, model.x, model.stages, model.live);
 }
 
 const pick = (metrics, name, match = {}) => (metrics[name] || []).filter((s) => Object.entries(match).every(([k, v]) => s.labels[k] === v));
 const one = (metrics, name, match) => { const s = pick(metrics, name, match)[0]; return s ? s.value : null; };
 
-function renderLive(runId) {
+function renderLive() {
   const snaps = state.snapshots;
   const t0 = snaps[0].t;
   const last = snaps[snaps.length - 1].metrics;
@@ -458,48 +1140,63 @@ function renderLive(runId) {
     return { label: workers.length > 1 ? `${w} ${st}` : st,
              values: snaps.map((s) => { const v = one(s.metrics, "loadgen_worker_stage_seconds", { worker: w, stage: st, quantile: "0.95" }); return v === null ? null : v * 1000; }) };
   });
-  const processedFps = workers.map((w) => ({ label: w, values: snaps.map((s) => one(s.metrics, "loadgen_worker_processed_fps", { worker: w })) }))
+  const processed = workers.map((w) => ({ label: w, values: snaps.map((s) => one(s.metrics, "loadgen_worker_processed_fps", { worker: w })) }))
     .filter((p) => p.values.some((v) => v !== null));
+  const staleness = perWorker("loadgen_synthetic_staleness_seconds", { quantile: "0.95" });
+  const lag = perWorker("loadgen_consumer_lag");
   const abort = pick(last, "loadgen_abort_info")[0];
   const info = pick(last, "loadgen_run_info")[0];
   const phase = pick(last, "loadgen_phase").find((m) => m.value === 1);
   const stage = pick(last, "loadgen_stage_info")[0];
   const errors = one(last, "loadgen_publish_errors_total");
+  const cameras = one(last, "loadgen_active_cameras");
   const offsets = pick(last, "loadgen_clock_offset_seconds").map((m) => `${m.labels.worker} ${m.value >= 0 ? "+" : ""}${m.value.toFixed(1)}s`).join(", ");
-  $("viewTitle").textContent = `Run ${runId || "(starting)"}${info ? ` · ${info.labels.scenario} (${info.labels.scenario_type}, ${info.labels.environment})` : ""}`;
-  renderModel({
-    x, staleness: perWorker("loadgen_synthetic_staleness_seconds", { quantile: "0.95" }),
-    lag: perWorker("loadgen_consumer_lag"), excess: perWorker("loadgen_real_staleness_excess_seconds"),
-    cameras: snaps.map((s) => one(s.metrics, "loadgen_active_cameras")), rate, processed: processedFps, stages,
+  const verdicts = pick(last, "loadgen_stage_kept_up").map((m) => ({
+    index: m.labels.stage_index, stage: m.labels.stage, worker: m.labels.worker, kept: m.value === 1,
+    p95: one(last, "loadgen_stage_staleness_p95_seconds", { worker: m.labels.worker, stage: m.labels.stage, stage_index: m.labels.stage_index }),
+  })).sort((a, b) => a.index.localeCompare(b.index) || a.worker.localeCompare(b.worker));
+  state.live = { stage: stage ? stage.labels.stage : "", cameras };
+  state.liveAborted = state.liveAborted || !!abort;
+  state.liveModel = {
+    live: true,
+    title: `Run ${state.runId || "(starting)"}${info ? ` · ${info.labels.scenario} (${info.labels.scenario_type}, ${info.labels.environment})` : ""}`,
+    x, staleness, lag, excess: perWorker("loadgen_real_staleness_excess_seconds"),
+    cameras: snaps.map((s) => one(s.metrics, "loadgen_active_cameras")), rate, processed, stages,
     aborted: abort ? abort.labels.reason : null,
     limit: one(last, "loadgen_threshold_seconds", { kind: "max_staleness" }), guard: one(last, "loadgen_threshold_seconds", { kind: "guard" }),
-    verdicts: pick(last, "loadgen_stage_kept_up").map((m) => ({
-      index: m.labels.stage_index, stage: m.labels.stage, worker: m.labels.worker, kept: m.value === 1,
-      p95: one(last, "loadgen_stage_staleness_p95_seconds", { worker: m.labels.worker, stage: m.labels.stage, stage_index: m.labels.stage_index }),
-    })).sort((a, b) => a.index.localeCompare(b.index) || a.worker.localeCompare(b.worker)),
-    tiles: [["Phase", phase ? phase.labels.phase : "–"], ["Stage", stage ? stage.labels.stage : "–"],
-            ["Synthetic cameras", num(one(last, "loadgen_active_cameras"), 0)], ["Publish rate", `${num(rate[rate.length - 1])} /s`],
-            ["Processed", processedFps.map((p) => `${p.label} ${num(p.values[p.values.length - 1])}/s`).join(", ") || "–"],
-            ["Publish errors", num(errors, 0)], ["Clock offset", offsets || "–"]],
-  });
+    verdicts, now: buildNow(workers, staleness, lag, processed, verdicts),
+    facts: [["Phase", phase ? phase.labels.phase : "–"], ["Stage", stage ? stage.labels.stage : "–"], ["Synthetic cameras", num(cameras, 0)],
+            ["Publishing", `${num(lastOf(rate))} frames/s`], ["Publish errors", num(errors, 0)], ["Clock offset", offsets || "–"]],
+  };
+  if (state.mode === "live" && !state.viewing) renderModel(state.liveModel);
 }
 
-// ------------------------------------------------------------------ history
-function showMode(mode) {
+// ------------------------------------------------------------------ tabs
+const TABS = { live: ["tabLive", "liveView"], history: ["tabHistory", "historyView"], logs: ["tabLogs", "logsView"] };
+function showMode(mode, focus = false) {
   state.mode = mode;
-  $("tabLive").classList.toggle("active", mode === "live");
-  $("tabHistory").classList.toggle("active", mode === "history");
-  $("tabLogs").classList.toggle("active", mode === "logs");
-  $("historyCard").hidden = mode !== "history";
-  $("liveView").hidden = mode === "logs";
-  $("logsView").hidden = mode !== "logs";
+  for (const [m, [tab, panel]] of Object.entries(TABS)) {
+    const on = m === mode;
+    $(tab).setAttribute("aria-selected", on ? "true" : "false");
+    $(tab).tabIndex = on ? 0 : -1;
+    $(panel).hidden = !on;
+  }
+  if (focus) $(TABS[mode][0]).focus();
   if (mode === "history") refreshRuns();
   else if (mode === "logs") { refreshLogTargets(); state.logs.dirty = true; renderLogs(); }
-  else if (state.snapshots.length) renderLive();
+  else showCurrentView();
 }
 $("tabLive").onclick = () => showMode("live");
 $("tabHistory").onclick = () => showMode("history");
 $("tabLogs").onclick = () => showMode("logs");
+$("tabs").addEventListener("keydown", (e) => {
+  const order = ["live", "history", "logs"], i = order.indexOf(state.mode);
+  const next = { ArrowRight: (i + 1) % 3, ArrowLeft: (i + 2) % 3, Home: 0, End: 2 }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  showMode(order[next], true);
+});
+$("backToRun").onclick = () => { state.viewing = null; state.viewModel = null; showCurrentView(); $("viewTitle").focus?.(); };
 
 // ------------------------------------------------------------------ worker logs
 async function refreshLogTargets() {
@@ -577,19 +1274,49 @@ $("logStopBtn").onclick = async () => {
 $("logWorker").onchange = () => { if (state.logs.following && $("logWorker").value !== state.logs.worker) followLogs($("logWorker").value); };
 for (const id of ["logFilter", "logProblems"]) $(id).addEventListener("input", () => { state.logs.dirty = true; renderLogs(); });
 
+// ------------------------------------------------------------------ history
 async function refreshRuns() {
-  const runs = await api("/api/runs");
-  $("runsTable").querySelector("tbody").innerHTML = runs.map((r) => {
+  $("historyError").textContent = "";
+  try { state.runs = await api("/api/runs"); } catch (error) { $("historyError").textContent = `Cannot list runs: ${error.message}`; return; }
+  $("runsTable").querySelector("tbody").innerHTML = state.runs.map((r) => {
     const result = r.error ? `<span class="bad-text">error</span>` : r.aborted ? `<span class="warn-text">aborted</span>`
       : r.throughput ? Object.entries(r.throughput).map(([w, t]) => `${esc(w)} max ${t.max_sustained_cameras ?? "–"}`).join(", ") : "done";
-    return `<tr class="clickable" data-run="${esc(r.run_id)}"><td class="mono">${esc(r.run_id)}</td><td>${esc(r.scenario)} <span class="muted">${esc(r.type)}</span></td>
-      <td>${esc((r.workers || []).join(", "))}</td><td>${esc(r.source || "live")}</td><td>${r.stages}</td><td>${result}</td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="muted">No runs in ${esc(state.config.results_dir)}</td></tr>`;
+    return `<tr><td><button class="link mono" data-open-run="${esc(r.run_id)}" aria-label="Open run ${esc(r.run_id)}">${esc(r.run_id)}</button></td>`
+      + `<td>${esc(r.scenario)} <span class="muted">${esc(r.type)}</span></td><td>${esc((r.workers || []).join(", "))}</td><td>${esc(r.source || "live")}</td>`
+      + `<td class="num">${r.stages}</td><td>${result}</td><td><button data-reuse-run="${esc(r.run_id)}" aria-label="Load the settings of run ${esc(r.run_id)}">Use settings</button></td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted">No runs yet in <span class="mono">${esc(state.config.results_dir)}</span>. Finished runs appear here.</td></tr>`;
 }
-$("runsTable").onclick = async (e) => {
-  const row = e.target.closest("tr[data-run]");
-  if (!row) return;
-  const { summary, timeseries } = await api(`/api/runs/${row.dataset.run}`);
+
+$("runsTable").onclick = (e) => {
+  const open = e.target.closest("[data-open-run]"), reuse = e.target.closest("[data-reuse-run]");
+  if (open) openRun(open.dataset.openRun, open);
+  if (reuse) reuseRun(state.runs.find((r) => r.run_id === reuse.dataset.reuseRun));
+};
+
+function reuseRun(run) {
+  if (!run) return;
+  const workers = run.workers || [];
+  for (const box of $("workers").querySelectorAll("input")) box.checked = workers.includes(box.value);
+  if (SCENARIOS[run.type]) $("scenario").value = run.type;
+  const radio = document.querySelector(`input[name=source][value="${run.source === "corpus" ? "corpus" : "live"}"]`);
+  if (radio) radio.checked = true;
+  updateScenarioHelp();
+  saveForm();
+  $("loadTitle").scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
+  $("runBtn").focus({ preventScroll: true });
+  announce(`Settings from run ${run.run_id} loaded into Load test. Check overrides and sizing before running.`);
+}
+
+async function openRun(runId, button) {
+  $("historyError").textContent = "";
+  button.setAttribute("aria-busy", "true");
+  const label = button.textContent;
+  button.textContent = "Opening…";
+  let data;
+  try { data = await api(`/api/runs/${encodeURIComponent(runId)}`); }
+  catch (error) { $("historyError").textContent = `Cannot open run ${runId}: ${error.message}`; return; }
+  finally { button.textContent = label; button.removeAttribute("aria-busy"); }
+  const { summary, timeseries } = data;
   const scenario = summary.scenario || {};
   const workers = scenario.workers || [];
   const val = (v) => (v === undefined || v === "" || v === "-" || v === "None") ? null : Number(v);
@@ -599,26 +1326,32 @@ $("runsTable").onclick = async (e) => {
   (summary.stages || []).forEach((stage, i) => Object.entries(stage.workers || {}).forEach(([w, entry]) => {
     if (entry.verdict) verdicts.push({ index: String(i + 1).padStart(2, "0"), stage: stage.name, worker: w, kept: entry.verdict.kept_up, reason: entry.verdict.reason, hint: entry.verdict.hint, p95: entry.verdict.staleness_p95 });
   }));
-  const throughput = Object.entries(summary.throughput || {}).map(([w, t]) => `${w} ${t.max_sustained_cameras ?? "–"}`).join(", ");
   const columns = timeseries.length ? Object.keys(timeseries[0]) : [];
   const stages = workers.flatMap((w) => columns.filter((c) => c.startsWith(`${w}_stage_`) && c.endsWith("_p95")).map((c) => ({
     label: workers.length > 1 ? `${w} ${c.slice(w.length + 7, -4)}` : c.slice(w.length + 7, -4),
     values: timeseries.map((r) => { const v = val(r[c]); return v === null ? null : v * 1000; }),
   })));
   const processed = perWorker("processed_fps").filter((p) => p.values.some((v) => v !== null));
-  $("viewTitle").textContent = `Run ${summary.run_id} · ${scenario.name} (${scenario.type}, ${summary.environment})${summary.error ? " · error: " + summary.error : ""}`;
-  renderModel({
-    x, staleness: perWorker("staleness_p95"), lag: perWorker("lag"), excess: perWorker("real_excess"),
+  const staleness = perWorker("staleness_p95"), lag = perWorker("lag");
+  state.viewing = runId;
+  state.viewModel = {
+    live: false,
+    title: `Past run ${summary.run_id} · ${scenario.name} (${scenario.type}, ${summary.environment})`,
+    x, staleness, lag, excess: perWorker("real_excess"),
     cameras: timeseries.map((r) => val(r.active_cameras)), rate: timeseries.map((r) => val(r.publish_rate)),
     processed, stages, aborted: summary.aborted || null,
-    limit: (scenario.saturation || {}).max_staleness_s, guard: (scenario.guard || {}).max_real_staleness_increase_s, verdicts,
-    tiles: [["Template", summary.template_camera_id || "–"], ["Source", (scenario.source || {}).mode || "live"],
-            ["Stages", String((summary.stages || []).length)], ["Frames acked", String((summary.producer || {}).acked ?? "–")],
-            ["Max sustained", throughput || "–"], ["Teardown", (summary.teardown || {}).errors?.length ? "errors" : "clean"]],
-  });
-};
+    limit: (scenario.saturation || {}).max_staleness_s, guard: (scenario.guard || {}).max_real_staleness_increase_s,
+    verdicts, now: buildNow(workers, staleness, lag, processed, verdicts), result: resultFromSummary(summary),
+    facts: [["Template", summary.template_camera_id || "–"], ["Source", (scenario.source || {}).mode || "live"],
+            ["Stages", String((summary.stages || []).length)], ["Frames acked", String((summary.producer || {}).acked ?? "–")]],
+  };
+  showMode("live", true);
+}
 
-init().catch((error) => { document.body.insertAdjacentHTML("afterbegin", `<p class="error" style="padding:12px">${esc(error.message)}</p>`); });
+init().catch((error) => {
+  $("fatal").hidden = false;
+  $("fatalMsg").textContent = error.message;
+});
 </script>
 </body>
 </html>
