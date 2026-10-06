@@ -170,6 +170,7 @@ def base_config(lookup: Lookup, shared: Lookup) -> dict[str, Any]:
             "password": lookup("LOADGEN_WORKER_LOGS_PASSWORD") or "",
             "docker_command": lookup("LOADGEN_WORKER_LOGS_DOCKER") or "docker",
         },
+        "host_stats": {"enabled": (lookup("LOADGEN_HOST_STATS") or "1").strip().lower() not in ("0", "false", "off", "no")},
         "workers": expand_env(workers, lookup),
     }
 

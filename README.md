@@ -151,7 +151,10 @@ above: upload a video and build a corpus, add or remove video cameras, check, ru
 - **Live view:** charts the run as it goes (staleness p95 against the keep-up limit, consumer lag,
   real-camera excess against the guard, cameras and publish rate) plus the stage verdicts.
   It also charts the worker's own stage times and processed fps when the worker publishes them,
-  and shows why a run was aborted.
+  the host's CPU, RAM, GPU utilization and VRAM (see "Host resources" below), and shows why a run
+  was aborted. Every chart marks the stages: alternate stages are shaded, a dashed line shows where
+  each begins, `S1`, `S2`... label them, a key above the charts spells out each name, and hovering
+  a point names its stage. A stage is marked from its first sample.
 - **History:** shows any finished run from the results folder.
 - **Worker logs:** follows a worker container's `docker logs` live, with a text/regex filter and
   a warnings-and-errors switch. Starting a run also follows the first selected worker. See below.
@@ -159,6 +162,26 @@ above: upload a video and build a corpus, add or remove video cameras, check, ru
   `<results>/ui-jobs/`.
 - **Access:** the page only listens on localhost and accepts no arbitrary commands. Production
   runs need `ui --allow-production`.
+
+### Host resources
+
+During a run the load generator reads the workers' Docker host once every `host_stats.interval_s`
+(2 s): CPU % and RAM from `/proc`, GPU utilization and VRAM per GPU from `nvidia-smi`, and the CPU %
+and RAM of each worker container from `docker stats`. They are charted live and for past runs, written
+to `timeseries.csv` (`host_cpu_pct`, `host_ram_used_mb`, `host_ram_total_mb`, `gpu<N>_util_pct`,
+`gpu<N>_vram_used_mb`, `gpu<N>_vram_total_mb`, `<worker>_container_cpu_pct`, `<worker>_container_ram_mb`),
+served on the live metrics endpoint (`loadgen_host_*`, `loadgen_gpu_*`, `loadgen_container_*`) and
+summarised per stage in `summary.json` (`stages[].resources`: peak and average CPU and GPU utilization,
+peak RAM and VRAM).
+
+It runs where the Worker logs tab runs docker: over ssh when `LOADGEN_WORKER_LOGS_SSH` is set (same key or
+password login, and the same sudo prefix from `LOADGEN_WORKER_LOGS_DOCKER`), otherwise on this machine,
+which is right when the load generator runs beside the worker on its host and wrong from a laptop. From a
+Windows machine without the ssh setting nothing is read. The host numbers cover everything on that
+machine, not only the workers under test; docker's container CPU counts one core as 100. A host that has no
+GPU or no docker access just leaves those readings out, and a host that cannot be reached never fails
+a run. `check` reports whether the host answers. Turn it off with `LOADGEN_HOST_STATS=0`
+(or `host_stats.enabled: false` in a `--config` file).
 
 ### Worker logs
 

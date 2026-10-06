@@ -91,6 +91,13 @@ def test_parse_prometheus_keeps_loadgen_metrics():
     assert metrics["loadgen_stage_info"][0]["labels"]["stage"] == 'level "5"'
 
 
+def test_parse_prometheus_keeps_metrics_this_server_has_not_heard_of():
+    # A run from newer code than the long-running UI server exports metrics missing from its table.
+    text = 'loadgen_metric_from_the_future{run_id="r"} 2.0\nloadgen_host_cpu_percent{run_id="r"} 40.0\n'
+    metrics = parse_prometheus(text)
+    assert set(metrics) == {"loadgen_metric_from_the_future", "loadgen_host_cpu_percent"}
+
+
 def test_job_lifecycle_output_and_stop(tmp_path):
     # Stands in for a run: watches LOADGEN_STOP_FILE as Runner does.
     script = ("import os, sys, time\n"

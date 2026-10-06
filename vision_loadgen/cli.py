@@ -11,6 +11,7 @@ from typing import Any
 from vision_loadgen import db
 from vision_loadgen.config import AppConfig, ConfigError, WorkerMetricsConfig, load_scenario
 from vision_loadgen.environment import DEFAULT_WORKER_SETTINGS, build_app_config, load_env_file
+from vision_loadgen.hoststats import HostStats
 from vision_loadgen.kafka_io import LagReader
 from vision_loadgen.metrics import stage_buckets, stage_quantiles
 from vision_loadgen.registrar import Registrar, find_orphans, registry_for_orphan
@@ -303,6 +304,22 @@ def _check(app: AppConfig, args) -> int:
     else:
         warn(f"events dir '{app.events.dir or 'unset'}' not available here and LOADGEN_WORKER_LOGS_SSH unset; "
              "event files will not be cleaned")
+
+    if app.host_stats.enabled:
+        host = HostStats(app.worker_logs, app.host_stats,
+                         {name: app.workers[name].container for name in scenario.workers})
+        if not host.problem:
+            host.start()
+            sample = host.wait_first(20)
+            host.stop()
+        else:
+            sample = None
+        if sample is None:
+            warn(f"host stats (CPU, RAM, GPU, VRAM) will be missing from the charts: {host.problem}")
+        else:
+            gpus = f"{len(sample.gpus)} GPU(s)" if sample.gpus else "no GPU (nvidia-smi not answering)"
+            containers = f"{len(host.containers)} worker container(s)" if host.containers else "no worker containers"
+            ok(f"host stats from {host.source}: CPU, RAM, {gpus}, {containers}")
 
     try:
         reader = LagReader(app.kafka)

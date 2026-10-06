@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from vision_loadgen import dockerhost
 from vision_loadgen.config import AppConfig, ConfigError
-from vision_loadgen.exporter import METRICS, parse_exposition
+from vision_loadgen.exporter import parse_exposition
 from vision_loadgen.sources import HEADER_NAME, MANIFEST_NAME, read_corpus_header
 
 log = logging.getLogger(__name__)
@@ -173,8 +173,13 @@ def build_command(app: AppConfig, action: str, params: dict, allow_production: b
 # ---------------------------------------------------------------------------- metrics
 
 def parse_prometheus(text: str) -> dict[str, list[dict[str, Any]]]:
-    """{metric: [{"labels": {...}, "value": float}]} for the loadgen metrics in an exposition."""
-    return parse_exposition(text, METRICS)
+    """{metric: [{"labels": {...}, "value": float}]} for the loadgen metrics in an exposition.
+
+    Every `loadgen_*` series is kept, not only those in this server's METRICS table: a run started
+    from newer code than a UI server that has been up for days exports metrics the server has not
+    heard of, and filtering by table silently hid them from the live view.
+    """
+    return {name: series for name, series in parse_exposition(text).items() if name.startswith("loadgen_")}
 
 
 def free_port(start: int = METRICS_PORT, attempts: int = 50) -> int:

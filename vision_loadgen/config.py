@@ -158,6 +158,17 @@ class WorkerLogsConfig(BaseModel):
     tail: int = Field(default=300, ge=0, le=100_000)
 
 
+class HostStatsConfig(BaseModel):
+    """CPU, RAM, GPU utilization and VRAM of the workers' Docker host, sampled during a run.
+
+    Read on the host that `worker_logs` points at (this machine when `ssh_target` is empty).
+    """
+
+    enabled: bool = True
+    # Seconds between readings on the host. `docker stats` itself takes about a second.
+    interval_s: float = Field(default=2.0, ge=1.0, le=60.0)
+
+
 class SettingsTarget(BaseModel):
     table: str
     camera_columns: list[str]
@@ -263,6 +274,7 @@ class AppConfig(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     worker_logs: WorkerLogsConfig = Field(default_factory=WorkerLogsConfig)
+    host_stats: HostStatsConfig = Field(default_factory=HostStatsConfig)
     workers: dict[str, WorkerConfig] = Field(default_factory=dict)
     # Set when running inside (a one-off container of) a worker: the worker it belongs to.
     local_worker: str = ""

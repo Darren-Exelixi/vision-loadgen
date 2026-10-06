@@ -20,6 +20,7 @@ from vision_loadgen.analysis import (
 from vision_loadgen.capacity import gpu_worker_map
 from vision_loadgen.config import WorkerMetricsConfig
 from vision_loadgen.exporter import MetricsExporter, parse_exposition
+from vision_loadgen.hoststats import HostSample, HostStats
 from vision_loadgen.kafka_io import LagReader, ProducerStats
 from vision_loadgen.workers import WorkerClient
 
@@ -218,12 +219,29 @@ def _fmt(value: Optional[float], digits: int = 1) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
 
 
+def _round(value: Optional[float], digits: int = 1) -> Optional[float]:
+    return None if value is None else round(value, digits)
+
+
+def _summary(values: list[Optional[float]], *, average: bool = False) -> dict[str, float]:
+    present = [value for value in values if value is not None]
+    if not present:
+        return {}
+    out = {"max": round(max(present), 1)}
+    if average:
+        out["avg"] = round(sum(present) / len(present), 1)
+    return out
+
+
 class Recorder:
     """Console line, timeseries.csv row and (optionally) live metrics per sample batch."""
 
     def __init__(self, directory: Path, workers: list[str], exporter: Optional[MetricsExporter] = None,
-                 stage_columns: Optional[dict[str, list[str]]] = None) -> None:
+                 stage_columns: Optional[dict[str, list[str]]] = None, host: Optional[HostStats] = None) -> None:
         self._workers = workers
+        # Host CPU/RAM/GPU readings; columns exist only when the host answered before the run began.
+        self._host = host
+        self._host_by_stage: dict[str, list[HostSample]] = {}
         # Worker stages written to the CSV (its columns are fixed when the file is opened).
         self._stage_columns = stage_columns or {}
         self._exporter = exporter
@@ -236,6 +254,12 @@ class Recorder:
             columns += [f"{worker}_ok", f"{worker}_lag", f"{worker}_staleness_p50", f"{worker}_staleness_p95",
                         f"{worker}_staleness_max", f"{worker}_real_excess", f"{worker}_processed_fps"]
             columns += [f"{worker}_stage_{stage}_p95" for stage in self._stage_columns.get(worker, [])]
+        if host is not None:
+            columns += ["host_cpu_pct", "host_ram_used_mb", "host_ram_total_mb"]
+            for gpu in range(host.gpu_count):
+                columns += [f"gpu{gpu}_util_pct", f"gpu{gpu}_vram_used_mb", f"gpu{gpu}_vram_total_mb"]
+            for worker in self._host_workers():
+                columns += [f"{worker}_container_cpu_pct", f"{worker}_container_ram_mb"]
         self._writer = csv.writer(self._file)
         self._writer.writerow(columns)
 
@@ -268,12 +292,84 @@ class Recorder:
             if sample.processed_fps is not None:
                 part += f" done={sample.processed_fps:.1f}/s"
             parts.append(part)
+        host_sample = self._host.latest() if self._host is not None else None
+        if self._host is not None:
+            row += self._host_row(host_sample)
+            if host_sample is not None:
+                self._host_by_stage.setdefault(stage, []).append(host_sample)
         self._writer.writerow(row)
         self._file.flush()
         if self._exporter is not None:
             self._export(active, stats, rate, by_worker, excess)
+            if self._host is not None:
+                self._export_host(host_sample)
         print(f"[{now - self._started:7.0f}s] {stage:<14} cams={active:<4} pub={rate:7.1f}/s "
               f"err={stats.errors} | " + " | ".join(parts), flush=True)
+
+    def _host_workers(self) -> list[str]:
+        return [worker for worker in self._workers if worker in self._host.containers]
+
+    def _host_row(self, sample: Optional[HostSample]) -> list:
+        """CSV cells for the host columns, in the order the header lists them; blanks without a reading."""
+        row: list = [_round(sample.cpu_pct) if sample else None, _round(sample.ram_used_mb, 0) if sample else None,
+                     _round(sample.ram_total_mb, 0) if sample else None]
+        gpus = {gpu.index: gpu for gpu in sample.gpus} if sample else {}
+        for index in range(self._host.gpu_count):
+            gpu = gpus.get(index)
+            row += [_round(gpu.util_pct) if gpu else None, _round(gpu.vram_used_mb, 0) if gpu else None,
+                    _round(gpu.vram_total_mb, 0) if gpu else None]
+        for worker in self._host_workers():
+            container = sample.containers.get(self._host.containers[worker]) if sample else None
+            row += [_round(container.cpu_pct) if container else None, _round(container.ram_mb, 0) if container else None]
+        return row
+
+    def _export_host(self, sample: Optional[HostSample]) -> None:
+        exporter = self._exporter
+        mb = 1024 * 1024
+
+        def bytes_of(value: Optional[float]) -> Optional[float]:
+            return None if value is None else value * mb
+
+        exporter.set("loadgen_host_cpu_percent", sample.cpu_pct if sample else None)
+        exporter.set("loadgen_host_memory_used_bytes", bytes_of(sample.ram_used_mb) if sample else None)
+        exporter.set("loadgen_host_memory_total_bytes", bytes_of(sample.ram_total_mb) if sample else None)
+        for name in ("loadgen_gpu_utilization_percent", "loadgen_gpu_memory_used_bytes", "loadgen_gpu_memory_total_bytes"):
+            exporter.clear(name)
+        for gpu in sample.gpus if sample else []:
+            exporter.set("loadgen_gpu_utilization_percent", gpu.util_pct, gpu=gpu.index)
+            exporter.set("loadgen_gpu_memory_used_bytes", bytes_of(gpu.vram_used_mb), gpu=gpu.index)
+            exporter.set("loadgen_gpu_memory_total_bytes", bytes_of(gpu.vram_total_mb), gpu=gpu.index)
+        for worker in self._host_workers():
+            container = sample.containers.get(self._host.containers[worker]) if sample else None
+            exporter.set("loadgen_container_cpu_percent", container.cpu_pct if container else None, worker=worker)
+            exporter.set("loadgen_container_memory_bytes", bytes_of(container.ram_mb) if container else None, worker=worker)
+
+    def stage_resources(self, stage: str) -> dict:
+        """Peaks and averages of the host readings taken during `stage`, for summary.json."""
+        samples = self._host_by_stage.get(stage)
+        if not samples:
+            return {}
+        out: dict = {"readings": len(samples), "host": {
+            "cpu_pct": _summary([s.cpu_pct for s in samples], average=True),
+            "ram_used_mb": _summary([s.ram_used_mb for s in samples])}}
+        gpus: dict[str, dict] = {}
+        for index in range(self._host.gpu_count):
+            readings = [gpu for s in samples for gpu in s.gpus if gpu.index == index]
+            gpus[str(index)] = {"util_pct": _summary([g.util_pct for g in readings], average=True),
+                                "vram_used_mb": _summary([g.vram_used_mb for g in readings]),
+                                "vram_total_mb": readings[-1].vram_total_mb if readings else None}
+        if gpus:
+            out["gpus"] = gpus
+        containers = {}
+        for worker in self._host_workers():
+            readings = [s.containers[self._host.containers[worker]] for s in samples
+                        if self._host.containers[worker] in s.containers]
+            if readings:
+                containers[worker] = {"cpu_pct": _summary([c.cpu_pct for c in readings], average=True),
+                                      "ram_mb": _summary([c.ram_mb for c in readings])}
+        if containers:
+            out["containers"] = containers
+        return out
 
     def _export(self, active: int, stats: ProducerStats, rate: float, by_worker: dict[str, WorkerSample],
                 excess: dict[str, Optional[float]]) -> None:

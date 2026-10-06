@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vision-loadgen</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -39,6 +40,8 @@ body { margin: 0; font: 14px/1.45 var(--sans); background: var(--bg); color: var
 ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input, textarea { caret-color: var(--accent); }
+/* placeholders are examples, never values: italic and muted, so an empty field never reads as filled in */
+::placeholder { color: var(--muted); opacity: 1; font-style: italic; }
 input[type=checkbox], input[type=radio], progress { accent-color: var(--accent); }
 * { scrollbar-color: var(--line-strong) transparent; }
 code, .mono { font-family: var(--mono); font-size: 12px; }
@@ -60,7 +63,11 @@ body[data-env="production"] .env-band { display: block; }
 .run-state { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
 .runbar[data-state="running"] .dot { background: var(--ok); animation: pulse 1.8s cubic-bezier(.16, 1, .3, 1) infinite; }
-.runbar[data-state="starting"] .dot, .runbar[data-state="stopping"] .dot, .runbar[data-state="aborted"] .dot { background: var(--warn); }
+.runbar[data-state="starting"] .dot, .runbar[data-state="stopping"] .dot, .runbar[data-state="aborted"] .dot,
+.runbar[data-state="stopped"] .dot { background: var(--warn); }
+.runbar[data-behind="true"] .dot { background: var(--bad); }
+.runbar[data-behind="true"] #runStateText { color: var(--bad); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
 .runbar[data-state="failed"] .dot { background: var(--bad); }
 .runbar[data-state="done"] .dot { background: var(--ok); }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
@@ -155,23 +162,51 @@ td .muted { font-size: 12px; }
 .result.ok .result-head { color: var(--ok); } .result.warn .result-head { color: var(--warn); } .result.bad .result-head { color: var(--bad); }
 .result ul { margin: 6px 0 0; padding-left: 18px; }
 .section-title { font-size: 13px; font-weight: 600; margin: 18px 0 6px; }
-.meter { display: grid; gap: 4px; min-width: 160px; max-width: 300px; }
-.meter-track { height: 6px; border-radius: 3px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; }
-.meter-track > span { display: block; height: 100%; background: var(--ok); }
-.meter.warn .meter-track > span { background: var(--warn); }
-.meter.bad .meter-track > span { background: var(--bad); }
-.meter-text { font-family: var(--mono); font-size: 12.5px; }
-.meter.bad .meter-text { color: var(--bad); font-weight: 500; }
 .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 14px 0 0; font-size: 13px; }
 .facts div { display: flex; gap: 6px; align-items: baseline; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; font-family: var(--mono); font-size: 12.5px; }
 .verdict-hint { color: var(--warn); font-size: 12px; margin-top: 2px; }
+.verdicts-empty { color: var(--muted); }
+
+/* verdict strip: one line per worker, readable from across a desk */
+.strip { display: grid; gap: 10px; margin-bottom: 4px; }
+.strip-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px; }
+.strip-row.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.strip-row.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.strip-row.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 7%, transparent); }
+.strip-say { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }
+.strip-say .who { color: var(--text); font-weight: 500; }
+@media (max-width: 600px) { .strip-say { font-size: 20px; } }
+.strip-row.ok .state { color: var(--ok); } .strip-row.warn .state { color: var(--warn); } .strip-row.bad .state { color: var(--bad); }
+.strip-detail { display: flex; flex-wrap: wrap; gap: 2px 18px; margin: 4px 0 0; font-size: 14px; }
+.strip-detail span { white-space: nowrap; }
+.strip-detail b { font-family: var(--mono); font-size: 14px; font-weight: 500; }
+.strip-detail .over { color: var(--bad); }
+.strip-meta { display: flex; flex-wrap: wrap; gap: 2px 18px; font-size: 13px; color: var(--muted); }
+.strip-meta b { font-family: var(--mono); font-size: 12.5px; font-weight: 500; color: var(--text); }
+.notice { display: flex; gap: 8px; align-items: baseline; margin: 10px 0 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+          border-radius: 4px; font-size: 13px; }
+.notice b { color: var(--warn); }
+
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; margin-top: 16px; }
+.charts.primary { grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); }
+.charts.primary .chart { height: 300px; }
+.charts.primary .chart h3 { font-size: 13px; color: var(--text); }
 .chart { position: relative; height: 240px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+details.group { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.group > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; cursor: pointer; list-style: none; font-size: 13px; font-weight: 600; }
+details.group > summary::-webkit-details-marker { display: none; }
+details.group > summary::before { content: ""; align-self: center; border-left: 5px solid currentColor; border-top: 4px solid transparent;
+                                  border-bottom: 4px solid transparent; transition: transform .2s cubic-bezier(.16, 1, .3, 1); }
+details[open].group > summary::before { transform: rotate(90deg); }
+details.group > summary .muted { font-weight: 400; font-family: var(--mono); font-size: 12px; }
+details.group > .charts, details.group > .facts { margin-top: 10px; }
 .chart h3 { margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--muted); }
 .chart.nodata canvas { visibility: hidden; }
 .chart.nodata::after { content: attr(data-empty); position: absolute; inset: 26px 8px 8px; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.stage-key { margin: 16px 0 0; font-size: 12px; color: var(--muted); }
+.stage-key + .charts { margin-top: 8px; }
 .chart canvas { position: absolute; left: 8px; right: 8px; top: 26px; bottom: 8px; width: calc(100% - 16px) !important; height: calc(100% - 34px) !important; }
 
 /* consoles */
@@ -196,6 +231,7 @@ dialog h2 { margin: 0; font-size: 20px; }
 .summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 14px 0; font-size: 13px; }
 .summary dt { color: var(--muted); }
 .summary dd { margin: 0; overflow-wrap: anywhere; }
+.summary dd.attn { padding: 2px 6px; margin: -2px -6px; border-radius: 3px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .ack { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 8px 10px; border: 1px solid var(--bad); border-radius: 4px;
        font-size: 13px; font-weight: 500; color: var(--text); }
 dialog .actions { justify-content: flex-end; margin-top: 16px; }
@@ -214,6 +250,7 @@ dialog .actions { justify-content: flex-end; margin-top: 16px; }
     <span class="run-state"><span class="dot" aria-hidden="true"></span><span id="runStateText">Idle</span></span>
     <div class="run-meta" id="runMeta"></div>
     <span class="chip" id="offlineChip" hidden>Server unreachable · retrying</span>
+    <span class="chip warn" id="staleChip" hidden></span>
     <span class="spacer"></span>
     <button class="stop" id="stopBtn" hidden>Stop run</button>
   </div>
@@ -245,7 +282,7 @@ dialog .actions { justify-content: flex-end; margin-top: 16px; }
       <p class="help" id="scenarioHelp"></p>
       <p class="help" id="sizingHelp">Per stage re-syncs the worker at every level, so the GPU runs as many model copies as production would; each re-sync restarts its pipeline. Fixed enables the largest count once.</p>
       <div class="row">
-        <div><label for="serverIp">Server IP <span class="muted">(optional)</span></label><input type="text" id="serverIp" placeholder="10.10.10.22" autocomplete="off"></div>
+        <div><label for="serverIp">Server IP <span class="muted">(optional)</span></label><input type="text" id="serverIp" placeholder="blank: from config · e.g. 10.10.10.22" autocomplete="off"></div>
       </div>
       <label for="templateCamera">Template camera id <span class="muted">(blank: freshest real camera)</span></label>
       <input type="text" id="templateCamera" list="cameraList" autocomplete="off" spellcheck="false" aria-describedby="templateMsg">
@@ -261,8 +298,9 @@ dialog .actions { justify-content: flex-end; margin-top: 16px; }
       <label for="runCorpus" class="vh">Corpus for this run</label>
       <select id="runCorpus" style="margin-top:6px"></select>
       <label for="overrides">Overrides <span class="muted">(one key=value per line)</span></label>
-      <textarea id="overrides" placeholder="levels=[5,10,20]&#10;level_duration_s=120" spellcheck="false" aria-describedby="overridesHelp overridesMsg"></textarea>
+      <textarea id="overrides" placeholder="Empty: the scenario defaults below.&#10;e.g. settle_s=30" spellcheck="false" aria-describedby="overridesState overridesHelp overridesMsg"></textarea>
       <div class="field-msg" id="overridesMsg"></div>
+      <p class="help" id="overridesState" aria-live="polite"></p>
       <p class="help" id="overridesHelp"></p>
       <div class="checks" style="margin-top:10px">
         <label id="noGuardLabel"><input type="checkbox" id="noGuard" aria-describedby="noGuardHelp"> No guard</label>
@@ -290,15 +328,15 @@ dialog .actions { justify-content: flex-end; margin-top: 16px; }
     <label for="uploadedVideo">Uploaded video</label>
     <select id="uploadedVideo"></select>
     <div class="row">
-      <div><label for="corpusName">Corpus name</label><input type="text" id="corpusName" placeholder="lobby"></div>
+      <div><label for="corpusName">Corpus name</label><input type="text" id="corpusName" placeholder="e.g. lobby"></div>
       <div><label for="corpusFps">FPS</label><input type="number" id="corpusFps" value="5" min="0.1" step="0.5"></div>
       <div><label for="corpusMax">Max seconds</label><input type="number" id="corpusMax" value="0" min="0"></div>
     </div>
     <label for="imageRoot">Image root on the workers</label>
-    <input type="text" id="imageRoot" placeholder="/app/events/loadgen_corpus/lobby" aria-describedby="imageRootHelp">
+    <input type="text" id="imageRoot" placeholder="blank: the default below" aria-describedby="imageRootHelp">
     <p class="help" id="imageRootHelp">Default <code>/app/events/loadgen_corpus/&lt;name&gt;</code>.</p>
     <label for="copyTarget">Copy target for the scp hint</label>
-    <input type="text" id="copyTarget" placeholder="admin1@10.10.10.22:/path/to/events/loadgen_corpus/">
+    <input type="text" id="copyTarget" placeholder="e.g. admin1@10.10.10.22:/path/to/events/loadgen_corpus/">
     <div class="actions"><button id="corpusBtn">Create corpus</button></div>
     <div class="error" id="corpusError" aria-live="polite"></div>
     <div class="note" id="corpusNote" aria-live="polite"></div>
@@ -307,11 +345,11 @@ dialog .actions { justify-content: flex-end; margin-top: 16px; }
     <h3 class="sub">Template video camera</h3>
     <div class="table-wrap"><table id="camerasTable"><thead><tr><th>Name</th><th>Id</th><th><span class="vh">Actions</span></th></tr></thead><tbody></tbody></table></div>
     <div class="row">
-      <div><label for="camName">Name</label><input type="text" id="camName" placeholder="Lobby video"></div>
+      <div><label for="camName">Name</label><input type="text" id="camName" placeholder="e.g. Lobby video"></div>
       <div><label for="camCorpus">Corpus</label><select id="camCorpus"></select></div>
     </div>
     <label for="camLike">Copy region and timezone from camera id</label>
-    <input type="text" id="camLike" placeholder="7797ee15-32d5-46b7-b736-ac078e9b9b8c" spellcheck="false" aria-describedby="camLikeMsg">
+    <input type="text" id="camLike" placeholder="e.g. 7797ee15-32d5-46b7-b736-ac078e9b9b8c" spellcheck="false" aria-describedby="camLikeMsg">
     <div class="field-msg" id="camLikeMsg"></div>
     <label for="camZones">Copy zones from camera id <span class="muted">(optional)</span></label>
     <input type="text" id="camZones" spellcheck="false" aria-describedby="camZonesMsg">
@@ -347,25 +385,37 @@ dialog .actions { justify-content: flex-end; margin-top: 16px; }
       <div id="result" hidden></div>
       <p class="empty" id="liveEmpty">Choose workers and a scenario, then press Run (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>). Charts and verdicts appear here once the first sample arrives.</p>
       <div id="liveBody" hidden>
-        <div class="table-wrap">
-          <table id="nowTable">
-            <caption class="vh" id="nowCaption">Latest sample per worker</caption>
-            <thead><tr><th>Worker</th><th>Synthetic staleness p95</th><th class="num">Kafka lag</th><th class="num">Processed</th><th class="num">Stages kept up</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <dl class="facts" id="facts"></dl>
+        <div class="strip" id="strip" role="group" aria-labelledby="stripLabel"><span class="vh" id="stripLabel">Verdict per worker</span></div>
+        <div id="notices"></div>
         <h3 class="section-title">Stage verdicts</h3>
         <div class="table-wrap">
-          <table id="verdicts"><thead><tr><th class="num">#</th><th>Stage</th><th>Worker</th><th>Verdict</th><th class="num">p95 (s)</th></tr></thead><tbody></tbody></table>
+          <table id="verdicts"><thead><tr><th class="num">#</th><th>Stage</th><th class="num">Cameras</th><th>Worker</th><th>Verdict</th><th class="num">p95 (s)</th></tr></thead><tbody></tbody></table>
         </div>
-        <div class="charts">
+        <p class="stage-key" id="stageKey" hidden></p>
+        <div class="charts primary">
           <div class="chart"><h3 id="hStaleness">Synthetic staleness p95 (s) against the keep-up limit</h3><canvas id="cStaleness" role="img" aria-labelledby="hStaleness"></canvas></div>
-          <div class="chart"><h3 id="hExcess">Real-camera staleness above baseline (s) against the guard limit</h3><canvas id="cExcess" role="img" aria-labelledby="hExcess"></canvas></div>
-          <div class="chart"><h3 id="hLoad">Synthetic cameras, published and processed frames/s</h3><canvas id="cLoad" role="img" aria-labelledby="hLoad"></canvas></div>
-          <div class="chart"><h3 id="hLag">Kafka consumer lag (messages)</h3><canvas id="cLag" role="img" aria-labelledby="hLag"></canvas></div>
-          <div class="chart"><h3 id="hStages">Worker stage time p95 (ms), from the worker's own metrics</h3><canvas id="cStages" role="img" aria-labelledby="hStages"></canvas></div>
+          <div class="chart"><h3 id="hLag">Kafka consumer lag (messages): rising means falling behind</h3><canvas id="cLag" role="img" aria-labelledby="hLag"></canvas></div>
         </div>
+        <details class="group" id="workerGroup" open>
+          <summary>Throughput, worker stages and the guard</summary>
+          <div class="charts">
+            <div class="chart"><h3 id="hLoad">Synthetic cameras, published and processed frames/s</h3><canvas id="cLoad" role="img" aria-labelledby="hLoad"></canvas></div>
+            <div class="chart"><h3 id="hStages">Worker stage time p95 (ms), from the worker's own metrics</h3><canvas id="cStages" role="img" aria-labelledby="hStages"></canvas></div>
+            <div class="chart"><h3 id="hExcess">Real-camera staleness above baseline (s) against the guard limit</h3><canvas id="cExcess" role="img" aria-labelledby="hExcess"></canvas></div>
+          </div>
+        </details>
+        <details class="group" id="hostGroup">
+          <summary>Host resources <span class="muted" id="hostSummary"></span></summary>
+          <div class="charts">
+            <div class="chart"><h3 id="hCpu">CPU: host (% of all cores) and container (cores in use)</h3><canvas id="cCpu" role="img" aria-labelledby="hCpu"></canvas></div>
+            <div class="chart"><h3 id="hRam">RAM on the worker host (GB)</h3><canvas id="cRam" role="img" aria-labelledby="hRam"></canvas></div>
+            <div class="chart"><h3 id="hGpu">GPU utilization and VRAM used (%)</h3><canvas id="cGpu" role="img" aria-labelledby="hGpu"></canvas></div>
+          </div>
+        </details>
+        <details class="group" id="detailsGroup">
+          <summary>Run details</summary>
+          <dl class="facts" id="facts"></dl>
+        </details>
       </div>
     </div>
 
@@ -417,7 +467,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   config: null, jobs: [], jobId: null, offset: 0, refreshed: new Set(), jobsLoaded: false, notes: {},
   runJobId: null, runJob: null, runId: "", stopping: false, metricsNext: 0, snapshots: [], live: {},
-  liveModel: null, liveResult: null, liveAborted: false, resultFor: null, viewing: null, viewModel: null, lastModel: null,
+  liveModel: null, liveResult: null, liveSummary: null, liveAborted: false, lastSampleAt: 0, behind: false, resultFor: null, viewing: null, viewModel: null, lastModel: null,
   mode: "live", charts: {}, runs: [], offline: false, lastRunState: null, corpusCount: 0, cameraCount: 0,
   logs: { targets: [], worker: "", offset: 0, lines: [], partial: "", following: false, dirty: true },
 };
@@ -433,7 +483,10 @@ const SCENARIOS = {
              keys: "levels=[5,10,20], level_duration_s=180" },
   soak: { text: "Holds 15 cameras for 4 hours. The guard backs off if real cameras suffer.", keys: "cameras=15, duration_s=14400" },
 };
-const STATE_TEXT = { idle: "Idle", starting: "Starting…", running: "Running", stopping: "Stopping…", done: "Finished", aborted: "Aborted", failed: "Failed" };
+const STATE_TEXT = { idle: "Idle", starting: "Starting…", running: "Running", stopping: "Stopping…", done: "Finished", stopped: "Stopped early",
+                     aborted: "Aborted", failed: "Failed" };
+const STALE_SAMPLE_S = 30;   // no new metrics sample for this long while running: say so
+const CLOCK_WARN_S = 2;      // same threshold as `check`
 let COLORS = [];
 let LIMIT_COLOR = "#b8302a";
 const THEME = { line: "", muted: "" };
@@ -581,8 +634,9 @@ function restoreForm() {
 function updateScenarioHelp() {
   const type = $("scenario").value;
   $("scenarioHelp").textContent = SCENARIOS[type].text;
-  $("overridesHelp").innerHTML = `Defaults for ${esc(type)}: <code>${esc(SCENARIOS[type].keys)}</code>. Also <code>fps_per_camera</code>, <code>settle_s</code>, `
+  $("overridesHelp").innerHTML = `Other keys: <code>fps_per_camera</code>, <code>settle_s</code>, `
     + `<code>saturation.max_staleness_s</code>, <code>guard.max_real_staleness_increase_s</code>.`;
+  updateOverridesState();
   const allowed = state.config && state.config.environment === "staging" && type === "throughput";
   $("noGuard").disabled = !allowed;
   if (!allowed) $("noGuard").checked = false;
@@ -590,6 +644,16 @@ function updateScenarioHelp() {
   $("noGuardHelp").textContent = allowed
     ? "No guard turns off the real-camera guard: real cameras can fall behind during the ramp."
     : "No guard is only allowed for throughput scenarios in staging.";
+}
+
+// What the run will actually use, stated under the field, so an empty box never reads as filled in.
+function updateOverridesState() {
+  const type = $("scenario").value;
+  const set = $("overrides").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  const defaults = `<code>${esc(SCENARIOS[type].keys)}</code>`;
+  $("overridesState").innerHTML = set.length
+    ? `<b>${set.length} override${set.length === 1 ? "" : "s"}</b> on top of the ${esc(type)} defaults ${defaults}.`
+    : `<b>No overrides:</b> runs with the ${esc(type)} defaults ${defaults}.`;
 }
 
 function overrideProblem() {
@@ -643,10 +707,11 @@ function openRunDialog() {
     ["Server IP", p.server_ip || "from config"],
     ["Real-camera guard", p.no_guard ? "OFF (no guard)" : "on"],
     ["Events", p.keep_events ? "kept" : "removed after the run"],
-    ["Overrides", p.set.length ? p.set.join("\n") : "none"],
+    ["Overrides", p.set.length ? p.set.join("\n") : `none: the ${p.scenario} defaults (${SCENARIOS[p.scenario].keys})`],
   ];
+  const ddClass = (k) => k === "Overrides" ? (p.set.length ? "mono" : "attn") : k === "Real-camera guard" && p.no_guard ? "bad-text" : "";
   $("runSummary").innerHTML = rows.map(([k, v]) =>
-    `<dt>${esc(k)}</dt><dd${k === "Overrides" && p.set.length ? ' class="mono" style="white-space:pre-line"' : ""}${k === "Real-camera guard" && p.no_guard ? ' class="bad-text"' : ""}>${esc(v)}</dd>`).join("");
+    `<dt>${esc(k)}</dt><dd class="${ddClass(k)}"${k === "Overrides" && p.set.length ? ' style="white-space:pre-line"' : ""}>${esc(v)}</dd>`).join("");
   $("prodAckRow").hidden = !prod;
   $("prodAck").checked = false;
   $("runConfirm").disabled = prod;
@@ -674,6 +739,7 @@ $("overrides").addEventListener("input", () => {
   const problem = overrideProblem();
   $("overrides").setAttribute("aria-invalid", problem ? "true" : "false");
   $("overridesMsg").textContent = problem;
+  updateOverridesState();
 });
 $("templateCamera").addEventListener("change", () => checkUuidField("templateCamera", "templateMsg", "Template camera"));
 $("camLike").addEventListener("change", () => checkUuidField("camLike", "camLikeMsg", "Region camera"));
@@ -691,7 +757,8 @@ async function startJob(action, params, errorEl, note) {
     if (note) setNote(job.id, note.el, note.label);
     if (job.kind === "run") {
       Object.assign(state, { runJobId: job.id, runJob: job, runId: "", stopping: false, metricsNext: 0, snapshots: [], live: {},
-                             liveModel: null, liveResult: null, liveAborted: false, resultFor: null, viewing: null, viewModel: null });
+                             liveModel: null, liveResult: null, liveSummary: null, liveAborted: false, resultFor: null, viewing: null,
+                             viewModel: null, lastSampleAt: 0, behind: false });
       showMode("live");
       const target = state.logs.targets.find((t) => params.workers.includes(t.worker));
       if (target) followLogs(target.worker).catch(() => {});
@@ -867,7 +934,8 @@ async function loadLiveResult(job) {
   } else {
     try {
       const { summary } = await api(`/api/runs/${encodeURIComponent(job.run_id)}`);
-      state.liveResult = resultFromSummary(summary);
+      state.liveSummary = summary;
+      state.liveResult = resultFromSummary(summary, !!job.stop_requested);
       state.liveAborted = !!summary.aborted;
       state.resultFor = job.run_id;
     } catch (error) {
@@ -926,6 +994,7 @@ async function tick() {
       const data = await api(`/api/jobs/${state.runJobId}/metrics?since=${state.metricsNext}`);
       state.snapshots.push(...data.snapshots);
       state.metricsNext = data.next;
+      if (data.snapshots.length) state.lastSampleAt = Date.now();
       if (data.run_id) state.runId = data.run_id;
       if (data.snapshots.length) renderLive();
     } catch (error) { /* run not started yet */ }
@@ -938,37 +1007,51 @@ function runState() {
   const job = state.runJob;
   if (!job) return "idle";
   if (job.running) return (job.stop_requested || state.stopping) ? "stopping" : (state.snapshots.length ? "running" : "starting");
+  if (state.liveAborted) return "aborted";
+  // A stop the user asked for wins over the exit code: teardown after a stop is the expected path.
+  if (job.stop_requested || (state.liveSummary && state.liveSummary.stopped_by)) return "stopped";
   if (job.returncode !== 0) return "failed";
-  return state.liveAborted ? "aborted" : "done";
+  return "done";
 }
 
 function updateRunBar() {
   const s = runState(), job = state.runJob;
-  $("runbar").dataset.state = s;
   const ended = job && !job.running;
-  $("runStateText").textContent = s === "idle" ? "Idle" : ended ? `Last run: ${STATE_TEXT[s].toLowerCase()}` : STATE_TEXT[s];
+  const behind = s === "running" && state.behind;
+  $("runbar").dataset.state = s;
+  $("runbar").dataset.behind = behind ? "true" : "false";
+  $("runStateText").textContent = s === "idle" ? "Idle" : ended ? `Last run: ${STATE_TEXT[s].toLowerCase()}`
+    : behind ? "Running · falling behind" : STATE_TEXT[s];
   const meta = [];
   if (!job) meta.push("No run in this session.");
   else {
     if (state.runId || job.run_id) meta.push(`Run <b>${esc(state.runId || job.run_id)}</b>`);
     const what = describeJob(job);
     if (what) meta.push(esc(what));
-    if (!ended && state.live.stage) meta.push(`Stage <b>${esc(state.live.stage)}</b>`);
+    if (!ended && state.live.stage) meta.push(`Stage <b>${esc(state.live.stage)}</b>${state.live.stageOf ? ` of ${state.live.stageOf}` : ""}`);
     if (!ended && state.live.cameras !== undefined && state.live.cameras !== null) meta.push(`<b>${num(state.live.cameras, 0)}</b> synthetic cameras`);
     if (job.started_at) meta.push(`<b>${fmtElapsed((job.ended_at || Date.now() / 1000) - job.started_at)}</b> ${ended ? "total" : "elapsed"}`);
   }
   $("runMeta").innerHTML = meta.map((m) => `<span>${m}</span>`).join("");
+  // A frozen feed must not look healthy: say when the last sample is getting old.
+  const age = state.lastSampleAt ? (Date.now() - state.lastSampleAt) / 1000 : 0;
+  const stale = (s === "running" || s === "stopping") && age >= STALE_SAMPLE_S;
+  $("staleChip").hidden = !stale;
+  if (stale) $("staleChip").textContent = `No new sample for ${fmtElapsed(age)}`;
   const stop = $("stopBtn");
   stop.hidden = !(s === "running" || s === "starting" || s === "stopping");
   stop.disabled = s === "stopping";
   stop.textContent = s === "stopping" ? "Stopping…" : "Stop run";
   const prod = state.config && state.config.environment === "production" ? "[PROD] " : "";
-  document.title = s === "idle" || ended ? `${prod}vision-loadgen` : `${prod}${STATE_TEXT[s]}${state.live.stage ? ` · ${state.live.stage}` : ""} · vision-loadgen`;
-  if (state.lastRunState !== null && state.lastRunState !== s) {
-    const said = { starting: "Run starting.", running: "Run is live.", stopping: "Stopping the run.", done: "Run finished.", aborted: "Run aborted by the guard.", failed: "Run failed." }[s];
+  document.title = s === "idle" || ended ? `${prod}vision-loadgen`
+    : `${prod}${behind ? "Behind" : STATE_TEXT[s]}${state.live.stage ? ` · ${state.live.stage}` : ""} · vision-loadgen`;
+  const key = `${s}${behind ? ":behind" : ""}`;
+  if (state.lastRunState !== null && state.lastRunState !== key) {
+    const said = behind ? "A worker is falling behind." : { starting: "Run starting.", running: "Run is live.", stopping: "Stopping the run.", done: "Run finished.",
+      stopped: "Run stopped early. Verdicts cover the stages that finished.", aborted: "Run aborted by the guard.", failed: "Run failed." }[s];
     if (said) announce(said);
   }
-  state.lastRunState = s;
+  state.lastRunState = key;
 }
 
 // ------------------------------------------------------------------ charts
@@ -999,6 +1082,155 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (state.lastModel) renderModel(state.lastModel);
 });
 
+// Stage markers: a faint band over every other stage, a dashed line where each stage starts and
+// its number (S1, S2, ...) at the top. Spans come from chart.$stages = [{index, name, start, end}].
+const stageMarkers = {
+  id: "stageMarkers",
+  beforeDatasetsDraw(chart) {
+    const spans = chart.$stages || [];
+    const { ctx, chartArea: area, scales: { x } } = chart;
+    if (!x || !spans.length) return;
+    ctx.save();
+    ctx.fillStyle = THEME.line;
+    ctx.globalAlpha = 0.45;
+    for (const span of spans) {
+      if (span.index % 2 === 0) continue;
+      const left = Math.max(area.left, x.getPixelForValue(span.start));
+      const right = Math.min(area.right, x.getPixelForValue(span.end));
+      if (right > left) ctx.fillRect(left, area.top, right - left, area.bottom - area.top);
+    }
+    ctx.restore();
+  },
+  afterDatasetsDraw(chart) {
+    const spans = chart.$stages || [];
+    const { ctx, chartArea: area, scales: { x } } = chart;
+    if (!x || !spans.length) return;
+    ctx.save();
+    ctx.font = `600 10px ${Chart.defaults.font.family}`;
+    ctx.textBaseline = "top";
+    for (const span of spans) {
+      const left = x.getPixelForValue(span.start);
+      const right = Math.min(area.right, x.getPixelForValue(span.end));
+      if (left > area.left + 1 && left < area.right) {
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = THEME.muted;
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.moveTo(left, area.top); ctx.lineTo(left, area.bottom); ctx.stroke();
+      }
+      if (right - Math.max(left, area.left) >= 20) {
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = THEME.muted;
+        ctx.fillText(`S${span.index}`, Math.max(left, area.left) + 4, area.top + 3);
+      }
+    }
+    ctx.restore();
+  },
+};
+
+// Stages as spans of run time: each starts at its first sample and ends where the next one starts.
+// stageAt[i] is {index, name} for sample i, or null before the first stage.
+function stageSpans(x, stageAt) {
+  const spans = [];
+  stageAt.forEach((stage, i) => {
+    if (!stage || x[i] === null || x[i] === undefined) return;
+    const last = spans[spans.length - 1];
+    if (last && last.index === stage.index) { last.end = x[i]; return; }
+    if (last) last.end = x[i];
+    spans.push({ index: stage.index, name: stage.name, start: x[i], end: x[i] });
+  });
+  return spans;
+}
+
+function renderStageKey(spans) {
+  const el = $("stageKey");
+  el.hidden = !spans.length;
+  el.textContent = spans.length ? `Shaded bands and S1, S2… on the charts mark the stages: ${spans.map((s) => `S${s.index} ${s.name}`).join(" · ")}` : "";
+}
+
+// Host resource readings (CPU, RAM, GPU, VRAM): d = {cpu, ramUsed (GB), ramTotal (GB), gpus: [{id, util, used (GB), total (GB)}],
+// containers: [{label, cpu, ram (GB)}]}, each array aligned with the chart's x.
+const GB = 1073741824;
+const toGb = (v) => (v === null || v === undefined ? null : v / GB);
+const NO_HOST = { cpu: [], ramUsed: [], ramTotal: null, gpus: [], containers: [] };
+
+function hostSeries(x, d) {
+  const flat = (v) => x.map(() => v);
+  const cpu = [{ label: "host CPU (% of all cores)", values: d.cpu }];
+  const ram = [{ label: "host RAM used", values: d.ramUsed }];
+  if (d.ramTotal !== null) ram.push({ label: "host RAM installed", values: flat(d.ramTotal), color: LIMIT_COLOR, dash: true, reference: true });
+  // docker stats reports container CPU as % of one core (4500 = 45 cores busy); cores in use reads directly.
+  const cores = (values) => values.map((v) => (v === null || v === undefined ? null : v / 100));
+  d.containers.forEach((c, i) => {
+    const color = COLORS[(1 + i) % COLORS.length];
+    cpu.push({ label: `${c.label} container (cores in use)`, values: cores(c.cpu), axis: "y1", dash: true, color });
+    ram.push({ label: `${c.label} container`, values: c.ram, dash: true, color });
+  });
+  // VRAM as a share of what is installed shares the 0-100 axis with utilization.
+  const gpu = [];
+  d.gpus.forEach((g, i) => {
+    const name = d.gpus.length > 1 ? `GPU ${g.id}` : "GPU";
+    gpu.push({ label: `${name} utilization (%)`, values: g.util, color: COLORS[(2 * i) % COLORS.length] });
+    if (g.total) gpu.push({ label: `${name} VRAM used (% of ${num(g.total)} GB)`, values: g.used.map((v) => (v === null ? null : (100 * v) / g.total)),
+                            dash: true, color: COLORS[(2 * i + 1) % COLORS.length] });
+    else gpu.push({ label: `${name} VRAM used (GB)`, values: g.used, axis: "y1", dash: true, color: COLORS[(2 * i + 1) % COLORS.length] });
+  });
+  return { cpu, ram, gpu };
+}
+
+function hostFacts(d) {
+  if (!d) return [];
+  const facts = [];
+  const cpu = lastOf(d.cpu), used = lastOf(d.ramUsed);
+  if (cpu !== null || used !== null) facts.push(["Host CPU / RAM", `${num(cpu, 0)}% · ${num(used)} of ${num(d.ramTotal)} GB`]);
+  for (const g of d.gpus) facts.push([d.gpus.length > 1 ? `GPU ${g.id}` : "GPU", `${num(lastOf(g.util), 0)}% · ${num(lastOf(g.used))} of ${num(g.total)} GB VRAM`]);
+  return facts;
+}
+
+// The closed Host resources group still answers "is the host the bottleneck?" in its summary line.
+function hostSummary(d) {
+  if (!d) return "no readings";
+  const parts = [];
+  const cpu = lastOf(d.cpu);
+  if (cpu !== null) parts.push(`CPU ${num(cpu, 0)}%`);
+  for (const c of d.containers) { const v = lastOf(c.cpu); if (v !== null) parts.push(`${c.label} ${num(v / 100)} cores`); }
+  const used = lastOf(d.ramUsed);
+  if (used !== null) parts.push(`RAM ${num(used, 0)} of ${num(d.ramTotal, 0)} GB`);
+  for (const g of d.gpus) {
+    const name = d.gpus.length > 1 ? `GPU ${g.id}` : "GPU";
+    parts.push(`${name} ${num(lastOf(g.util), 0)}% · VRAM ${num(lastOf(g.used))} of ${num(g.total)} GB`);
+  }
+  return parts.join(" · ") || "no readings";
+}
+
+function hostLive(snaps, workers) {
+  const series = (name, match, f = (v) => v) => snaps.map((s) => { const v = one(s.metrics, name, match); return v === null ? null : f(v); });
+  const gpuIds = [...new Set(snaps.flatMap((s) => pick(s.metrics, "loadgen_gpu_utilization_percent").map((m) => m.labels.gpu)))].sort();
+  const withContainer = workers.filter((w) => snaps.some((s) => one(s.metrics, "loadgen_container_cpu_percent", { worker: w }) !== null));
+  const d = {
+    cpu: series("loadgen_host_cpu_percent"), ramUsed: series("loadgen_host_memory_used_bytes", undefined, toGb),
+    ramTotal: lastOf(series("loadgen_host_memory_total_bytes", undefined, toGb)),
+    gpus: gpuIds.map((id) => ({ id, util: series("loadgen_gpu_utilization_percent", { gpu: id }),
+      used: series("loadgen_gpu_memory_used_bytes", { gpu: id }, toGb), total: lastOf(series("loadgen_gpu_memory_total_bytes", { gpu: id }, toGb)) })),
+    containers: withContainer.map((w) => ({ label: w, cpu: series("loadgen_container_cpu_percent", { worker: w }),
+      ram: series("loadgen_container_memory_bytes", { worker: w }, toGb) })),
+  };
+  return d.cpu.some((v) => v !== null) || d.gpus.length ? d : null;
+}
+
+function hostHistory(rows, columns, workers, val) {
+  if (!columns.includes("host_cpu_pct")) return null;
+  const col = (name, f = (v) => v) => rows.map((r) => { const v = val(r[name]); return v === null ? null : f(v); });
+  const mb = (v) => v / 1024;
+  const gpuIds = columns.map((c) => /^gpu(\d+)_util_pct$/.exec(c)).filter(Boolean).map((m) => m[1]);
+  return {
+    cpu: col("host_cpu_pct"), ramUsed: col("host_ram_used_mb", mb), ramTotal: lastOf(col("host_ram_total_mb", mb)),
+    gpus: gpuIds.map((id) => ({ id, util: col(`gpu${id}_util_pct`), used: col(`gpu${id}_vram_used_mb`, mb), total: lastOf(col(`gpu${id}_vram_total_mb`, mb)) })),
+    containers: workers.filter((w) => columns.includes(`${w}_container_cpu_pct`))
+      .map((w) => ({ label: w, cpu: col(`${w}_container_cpu_pct`), ram: col(`${w}_container_ram_mb`, mb) })),
+  };
+}
+
 function makeCharts() {
   const base = () => ({
     type: "line", data: { labels: [], datasets: [] },
@@ -1007,62 +1239,179 @@ function makeCharts() {
       interaction: { mode: "index", intersect: false },
       scales: { x: { type: "linear", title: { display: true, text: "seconds" }, ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } },
       elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.15 } },
-      plugins: { legend: { labels: { boxWidth: 10 } } },
+      plugins: {
+        legend: { labels: { boxWidth: 10 } },
+        tooltip: { callbacks: { afterTitle: (items) => {
+          const spans = (items[0] && items[0].chart.$stages) || [];
+          const at = items[0] ? items[0].parsed.x : null;
+          const span = at === null ? null : [...spans].reverse().find((sp) => at >= sp.start);
+          return span ? `Stage ${span.index}: ${span.name}` : "";
+        } } },
+      },
     },
+    plugins: [stageMarkers],
   });
-  for (const [key, id] of [["staleness", "cStaleness"], ["lag", "cLag"], ["excess", "cExcess"], ["load", "cLoad"], ["stages", "cStages"]]) {
+  for (const [key, id] of [["staleness", "cStaleness"], ["lag", "cLag"], ["excess", "cExcess"], ["load", "cLoad"], ["stages", "cStages"],
+                           ["cpu", "cCpu"], ["ram", "cRam"], ["gpu", "cGpu"]]) {
     state.charts[key] = new Chart($(id), base());
   }
+  const side = (text) => ({ position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text } });
+  state.charts.cpu.options.scales.y = { beginAtZero: true, max: 100, title: { display: true, text: "host %" } };
+  state.charts.cpu.options.scales.y1 = side("container cores");
+  state.charts.ram.options.scales.y.title = { display: true, text: "GB" };
+  state.charts.gpu.options.scales.y = { beginAtZero: true, max: 100, title: { display: true, text: "%" } };
+  state.charts.gpu.options.scales.y1 = side("VRAM GB");
   state.charts.excess.options.scales.y.beginAtZero = false;
   state.charts.load.options.scales.y1 = { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: "frames/s" } };
   for (const chart of Object.values(state.charts)) styleChart(chart);
 }
 
-function setChart(chart, x, series, live) {
+function setChart(chart, x, series, live, empty) {
   const hasData = series.some((s) => !s.reference && s.values.some((v) => v !== null && v !== undefined));
   const box = chart.canvas.parentElement;
   box.classList.toggle("nodata", !hasData);
-  box.dataset.empty = live ? "No samples yet." : "No samples in this run.";
+  box.dataset.empty = empty || (live ? "No samples yet." : "No samples in this run.");
   chart.data.datasets = series.map((s, i) => ({
     label: s.label, data: x.map((xv, j) => ({ x: xv, y: s.values[j] ?? null })),
     borderColor: s.color || COLORS[i % COLORS.length], backgroundColor: s.color || COLORS[i % COLORS.length],
     borderDash: s.dash ? [6, 5] : [], stepped: !!s.stepped, yAxisID: s.axis || "y",
   }));
+  if (chart.options.scales.y1) chart.options.scales.y1.display = chart.data.datasets.some((d) => d.yAxisID === "y1");
   chart.update("none");
 }
 
 // ------------------------------------------------------------------ run view
-function resultFromSummary(summary) {
-  const verdicts = (summary.stages || []).flatMap((stage) => Object.values(stage.workers || {}).map((w) => w.verdict).filter(Boolean));
-  const kept = verdicts.filter((v) => v.kept_up).length;
-  const lines = Object.entries(summary.throughput || {}).map(([w, t]) => `${w} sustained ${t.max_sustained_cameras ?? "–"} cameras`);
-  if (verdicts.length) lines.push(`${kept} of ${verdicts.length} stage verdicts kept up`);
+// Verdict rows from summary.json. A stage that ended without a verdict (the run was stopped or
+// aborted mid-stage) still gets a provisional row from its staleness against the keep-up limit,
+// so the stage that was failing never disappears.
+function summaryVerdicts(summary) {
+  const scenario = summary.scenario || {};
+  const limit = (scenario.saturation || {}).max_staleness_s;
+  const planned = summary.planned_stages || [];
+  const rows = [];
+  (summary.stages || []).forEach((stage, i) => Object.entries(stage.workers || {}).forEach(([w, e]) => {
+    const base = { index: String(i + 1).padStart(2, "0"), stage: stage.name, cameras: stage.cameras ?? null, worker: w };
+    if (e.verdict) {
+      rows.push({ ...base, kept: e.verdict.kept_up, reason: e.verdict.reason, hint: e.verdict.hint, p95: e.verdict.staleness_p95 });
+      return;
+    }
+    const plan = planned[i] || {};
+    if (plan.evaluate === false) return;
+    const ran = stage.duration_s ?? null, of = plan.duration_s ?? null;
+    const cut = ran !== null && of !== null && ran < of - 1;
+    const over = !!limit && e.staleness_p95 !== null && e.staleness_p95 !== undefined && e.staleness_p95 > limit;
+    rows.push({ ...base, provisional: true, kept: over ? false : null, p95: e.staleness_p95 ?? null,
+      reason: over ? "falling behind when it ended" : "no verdict",
+      hint: `${cut ? `Cut short after ${fmtElapsed(ran)} of ${fmtElapsed(of)}` : "Ended without a verdict"}. `
+        + (over ? `Staleness p95 was ${num(e.staleness_p95)} s against the ${num(limit)} s limit.` : "Too little data to judge.") });
+  }));
+  return rows;
+}
+
+// "kept up at 5 cameras, fell behind at 10" for one worker, from its verdict rows.
+function verdictSentence(worker, rows) {
+  const mine = rows.filter((v) => v.worker === worker && v.kept !== null);
+  if (!mine.length) return null;
+  const kept = mine.filter((v) => v.kept), fell = mine.filter((v) => !v.kept);
+  const cams = (list) => list.map((v) => v.cameras).filter((c) => c !== null && c !== undefined);
+  const parts = [];
+  if (kept.length) parts.push(cams(kept).length ? `kept up at ${Math.max(...cams(kept))} cameras` : `kept up in ${kept.length} of ${mine.length} stages`);
+  if (fell.length) {
+    const short = fell.some((v) => v.provisional) ? " (stage cut short)" : "";
+    parts.push(cams(fell).length ? `fell behind at ${Math.min(...cams(fell))}${kept.length ? "" : " cameras"}${short}` : `fell behind in ${fell.length} of ${mine.length} stages${short}`);
+  }
+  return { text: parts.join(", "), tone: fell.length ? "bad" : "ok" };
+}
+
+function resultFromSummary(summary, stopRequested = false) {
+  const rows = summaryVerdicts(summary);
+  const final = rows.filter((v) => !v.provisional);
+  const workers = (summary.scenario || {}).workers || [...new Set(rows.map((v) => v.worker))];
+  const planned = summary.planned_stages || [], ran = summary.stages || [];
+  const notRun = planned.slice(ran.length).map((s) => s.name);
+  const tp = Object.entries(summary.throughput || {});
+  const lines = tp.map(([w, t]) => `${w} sustained ${t.max_sustained_cameras ?? "–"} cameras`);
+  for (const w of workers) { const s = verdictSentence(w, rows); if (s && !tp.length) lines.push(`${w} ${s.text}`); }
+  for (const v of rows.filter((r) => r.provisional)) lines.push(`${v.stage}: ${v.hint}`);
+  if (notRun.length) lines.push(`Not run: ${notRun.join(", ")}`);
   const teardown = (summary.teardown || {}).errors || [];
   lines.push(teardown.length ? `Teardown had ${teardown.length} error(s); run Cleanup` : "Teardown clean");
   if (summary.error) return { tone: "bad", headline: `Error: ${summary.error}`, lines };
-  if (summary.aborted) return { tone: "warn", headline: `Aborted: ${summary.aborted}`, lines };
-  const tp = Object.entries(summary.throughput || {});
+  if (summary.aborted) return { tone: "warn", headline: `Aborted by the guard: ${summary.aborted}`, lines };
+  const anyBehind = rows.some((v) => v.kept === false);
+  const stoppedBy = summary.stopped_by || (stopRequested ? "user" : null);
+  // Runs from before stopped_by was recorded: a cut-short stage or stages never run still mean it ended early.
+  const endedEarly = stoppedBy || notRun.length || rows.some((v) => v.provisional);
+  if (endedEarly) {
+    const who = stoppedBy === "user" ? "Stopped by you" : stoppedBy ? `Stopped (${stoppedBy})` : "Ended early";
+    const last = ran.length ? ran[ran.length - 1].name : "";
+    const at = summary.ended_at && summary.started_at ? ` after ${fmtElapsed(summary.ended_at - summary.started_at)}` : "";
+    return { tone: anyBehind ? "bad" : "warn", headline: `${who}${last ? ` during ${last}` : ""}${at}`, lines };
+  }
   const headline = tp.length ? `Max sustained: ${tp.map(([w, t]) => `${w} ${t.max_sustained_cameras ?? "–"} cameras`).join(", ")}`
-    : !verdicts.length ? "Completed without stage verdicts"
-    : kept === verdicts.length ? "Completed: every stage kept up" : `Completed: ${verdicts.length - kept} of ${verdicts.length} stage verdicts fell behind`;
-  return { tone: !tp.length && (!verdicts.length || kept < verdicts.length) ? "warn" : "ok", headline, lines };
+    : !final.length ? "Completed without stage verdicts: no stage ran long enough to judge"
+    : final.every((v) => v.kept) ? "Completed: every stage kept up" : `Completed: ${final.filter((v) => !v.kept).length} of ${final.length} stage verdicts fell behind`;
+  return { tone: tp.length ? "ok" : !final.length || anyBehind ? "warn" : "ok", headline, lines };
 }
 
-function buildNow(workers, staleness, lag, processed, verdicts) {
+// Lag change per second over the last `window` seconds: positive means the backlog is growing.
+function lagSlope(x, values, window = 30) {
+  let end = values.length - 1;
+  while (end >= 0 && (values[end] === null || values[end] === undefined)) end--;
+  if (end < 1) return null;
+  let start = end;
+  for (let i = end - 1; i >= 0; i--) {
+    if (values[i] === null || values[i] === undefined) continue;
+    if (x[end] - x[i] > window) break;
+    start = i;
+  }
+  return x[end] > x[start] ? (values[end] - values[start]) / (x[end] - x[start]) : null;
+}
+
+// One strip row per worker. Live: how it is doing right now. Ended: what the run says about it.
+function stripRows(model) {
   const series = (list, w) => (list.find((s) => s.label === w) || { values: [] }).values;
-  return workers.map((w) => ({
-    worker: w, stale: lastOf(series(staleness, w)), lag: lastOf(series(lag, w)), proc: lastOf(series(processed, w)),
-    kept: verdicts.filter((v) => v.worker === w && v.kept).length, total: verdicts.filter((v) => v.worker === w).length,
-  }));
+  const limit = model.limit, maxGrowth = model.maxLagGrowth ?? 1;
+  return model.workers.map((w) => {
+    const stale = lastOf(series(model.staleness, w)), lagValues = series(model.lag, w);
+    const lag = lastOf(lagValues), slope = lagSlope(model.x, lagValues), proc = lastOf(series(model.processed, w));
+    const detail = [];
+    if (stale !== null) detail.push(`staleness p95 <b class="${limit && stale > limit ? "over" : ""}">${num(stale, 1)} s</b>${limit ? ` of ${num(limit, 1)} s` : ""}`);
+    if (lag !== null) detail.push(`lag <b>${num(lag, 0)}</b>${slope === null ? "" : Math.abs(slope) < 0.5 ? " steady" : slope > 0 ? ` rising ${num(slope)}/s` : ` falling ${num(-slope)}/s`}`);
+    if (proc !== null) detail.push(`processing <b>${num(proc)}</b> frames/s`);
+    if (!model.active) {
+      const sentence = verdictSentence(w, model.verdicts);
+      return { worker: w, tone: sentence ? sentence.tone : "warn", say: sentence ? sentence.text : "no stage verdict", detail: model.ended ? [] : detail };
+    }
+    if (stale === null) return { worker: w, tone: "", say: "waiting for samples", detail };
+    const ratio = limit ? stale / limit : 0;
+    const behind = ratio >= 1 || (slope !== null && slope > maxGrowth);
+    return { worker: w, tone: behind ? "bad" : ratio >= 0.7 ? "warn" : "ok", say: behind ? "falling behind" : ratio >= 0.7 ? "near the limit" : "keeping up", detail };
+  });
 }
 
-function meter(value, limit) {
-  if (value === null) return "–";
-  if (!limit) return `<span class="meter-text">${num(value, 2)} s</span>`;
-  const ratio = value / limit;
-  const tone = ratio >= 1 ? "bad" : ratio >= 0.7 ? "warn" : "ok";
-  return `<div class="meter ${tone}"><span class="meter-text">${num(value, 2)} s <span class="muted">of ${num(limit, 1)} s</span>${ratio >= 1 ? " · over limit" : ""}</span>`
-    + `<span class="meter-track" aria-hidden="true"><span style="width:${Math.min(ratio, 1) * 100}%"></span></span></div>`;
+function renderStrip(model, rows) {
+  const meta = model.stripMeta || [];
+  $("strip").innerHTML = `<span class="vh" id="stripLabel">Verdict per worker</span>` + rows.map((r, i) =>
+    `<div class="strip-row ${r.tone}"><p class="strip-say"><span class="who">${esc(r.worker)}</span> <span class="state">${esc(r.say)}</span></p>`
+    + (r.detail.length ? `<p class="strip-detail">${r.detail.map((d) => `<span>${d}</span>`).join("")}</p>` : "")
+    + (i === 0 && meta.length ? `<p class="strip-meta">${meta.map((m) => `<span>${m}</span>`).join("")}</p>` : "") + `</div>`).join("")
+    || `<div class="strip-row"><p class="strip-say"><span class="state">Waiting for the first worker sample</span></p></div>`;
+}
+
+// Things that change how to read the run, said once above the verdicts instead of hidden in an empty chart.
+function renderNotices(notices) {
+  $("notices").innerHTML = notices.map((n) => `<p class="notice"><b>${esc(n.title)}</b><span>${esc(n.text)}</span></p>`).join("");
+}
+
+function modelNotices(model) {
+  const notices = [];
+  if (model.guardOff) notices.push({ title: "Guard off.", text: "This run had No guard set: real cameras were not protected." });
+  const blind = Object.entries(model.guardCameras || {}).filter(([, n]) => n === 0).map(([w]) => w);
+  if (blind.length) notices.push({ title: "Guard inactive.", text: `${blind.join(", ")} had no live real cameras, so the guard had nothing to measure or protect. Real-camera staleness stays empty.` });
+  const skewed = Object.entries(model.clock || {}).filter(([, s]) => s !== null && Math.abs(s) > CLOCK_WARN_S);
+  if (skewed.length) notices.push({ title: "Clock offset.", text: `${skewed.map(([w, s]) => `${w} ${s >= 0 ? "+" : ""}${num(s)} s`).join(", ")} against this machine. Real-camera readings are corrected for it; more than ${CLOCK_WARN_S} s usually means time sync is off on the worker host.` });
+  return notices;
 }
 
 function renderResult(result) {
@@ -1096,29 +1445,80 @@ function renderModel(model) {
   $("backToRun").hidden = !state.viewing;
   $("backToRun").textContent = state.runJob ? "Back to the current run" : "Close this past run";
   $("abortBanner").hidden = !model.aborted;
-  $("abortBanner").textContent = model.aborted ? `Aborted: ${model.aborted}` : "";
-  renderResult(model.live ? (state.runJob && !state.runJob.running ? state.liveResult : null) : model.result);
+  $("abortBanner").textContent = model.aborted ? `Aborted by the guard: ${model.aborted}` : "";
+  // A live run that has ended reads like a past run: verdicts and notices come from its summary.
+  const ended = model.live && state.runJob && !state.runJob.running;
+  const summary = ended ? state.liveSummary : null;
+  const view = summary ? { ...model, ended: true, verdicts: summaryVerdicts(summary), ...summaryContext(summary, !!state.runJob.stop_requested) } : model;
+  view.active = model.live && !ended;
+  renderResult(model.live ? (ended ? state.liveResult : null) : model.result);
 
-  $("nowCaption").textContent = model.live ? "Latest sample per worker" : "End of run per worker";
-  $("nowTable").querySelector("tbody").innerHTML = model.now.map((r) =>
-    `<tr><th scope="row">${esc(r.worker)}</th><td>${meter(r.stale, model.limit)}</td><td class="num">${num(r.lag, 0)}</td>`
-    + `<td class="num">${r.proc === null ? "–" : `${num(r.proc)} /s`}</td><td class="num">${r.total ? `${r.kept} of ${r.total}` : "–"}</td></tr>`).join("")
-    || `<tr><td colspan="5" class="muted">No worker samples yet.</td></tr>`;
-  $("facts").innerHTML = model.facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
-  $("verdicts").querySelector("tbody").innerHTML = model.verdicts.map((v) =>
-    `<tr><td class="num">${esc(v.index)}</td><td>${esc(v.stage)}</td><td>${esc(v.worker)}</td><td><span class="${v.kept ? "ok-text" : "bad-text"}">${v.kept ? "kept up" : esc(v.reason || "fell behind")}</span>`
-    + `${v.hint ? `<div class="verdict-hint">${esc(v.hint)}</div>` : ""}</td><td class="num">${num(v.p95, 2)}</td></tr>`).join("")
-    || `<tr><td colspan="5" class="muted">Verdicts appear as each stage ends.</td></tr>`;
+  const rows = stripRows(view);
+  state.behind = view.active && rows.some((r) => r.tone === "bad");
+  renderStrip(view, rows);
+  renderNotices(modelNotices(view));
+  // "Now" facts (phase, publishing...) describe a moment that is over once the run ends.
+  const facts = ended ? view.facts.filter(([k]) => !["Phase", "Stage", "Synthetic cameras", "Publishing"].includes(k)) : view.facts;
+  $("facts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+  $("verdicts").querySelector("tbody").innerHTML = view.verdicts.map((v) => {
+    const word = v.provisional ? (v.kept === false ? "interrupted · falling behind" : "interrupted · no verdict") : v.kept ? "kept up" : (v.reason || "fell behind");
+    const cls = v.kept === false ? "bad-text" : v.kept ? "ok-text" : "warn-text";
+    return `<tr><td class="num">${esc(v.index)}</td><td>${esc(v.stage)}</td><td class="num">${v.cameras ?? "–"}</td><td>${esc(v.worker)}</td>`
+      + `<td><span class="${cls}">${esc(word)}</span>${v.hint ? `<div class="verdict-hint">${esc(v.hint)}</div>` : ""}</td><td class="num">${num(v.p95, 2)}</td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="verdicts-empty">${view.active ? "Verdicts appear as each stage ends." : "No stage ran long enough for a verdict."}</td></tr>`;
 
-  setChart(state.charts.staleness, model.x, [...model.staleness, model.limit && { label: "keep-up limit", values: model.x.map(() => model.limit), color: LIMIT_COLOR, dash: true, reference: true }].filter(Boolean), model.live);
-  setChart(state.charts.lag, model.x, model.lag, model.live);
-  setChart(state.charts.excess, model.x, [...model.excess, model.guard && { label: "guard limit", values: model.x.map(() => model.guard), color: LIMIT_COLOR, dash: true, reference: true }].filter(Boolean), model.live);
+  const spans = model.stageSpans || [];
+  for (const chart of Object.values(state.charts)) chart.$stages = spans;
+  renderStageKey(spans);
+  const empty = view.active ? null : "No samples in this run.";
+  setChart(state.charts.staleness, model.x, [...model.staleness, model.limit && { label: "keep-up limit", values: model.x.map(() => model.limit), color: LIMIT_COLOR, dash: true, reference: true }].filter(Boolean), view.active, empty);
+  setChart(state.charts.lag, model.x, model.lag, view.active, empty);
+  const blind = Object.values(view.guardCameras || {}).length && Object.values(view.guardCameras).every((n) => n === 0);
+  const noReal = view.guardOff ? "Guard off for this run: real cameras were not watched."
+    : blind ? "No real cameras on this worker, so the guard has nothing to measure." : empty;
+  setChart(state.charts.excess, model.x, [...model.excess, model.guard && { label: "guard limit", values: model.x.map(() => model.guard), color: LIMIT_COLOR, dash: true, reference: true }].filter(Boolean), view.active, noReal);
+  // With no real cameras (or no guard) the chart can only ever be empty; the notice above says why.
+  const excessBox = state.charts.excess.canvas.parentElement;
+  const hideExcess = (view.guardOff || blind) && excessBox.classList.contains("nodata");
+  if (excessBox.hidden !== hideExcess) { excessBox.hidden = hideExcess; }
   setChart(state.charts.load, model.x, [
     { label: "synthetic cameras", values: model.cameras, stepped: true, color: COLORS[0] },
     { label: "published", values: model.rate, axis: "y1", color: COLORS[2] },
     ...model.processed.map((p, i) => ({ label: `processed (${p.label})`, values: p.values, axis: "y1", dash: true, color: COLORS[(3 + i) % COLORS.length] })),
-  ], model.live);
-  setChart(state.charts.stages, model.x, model.stages, model.live);
+  ], view.active, empty);
+  setChart(state.charts.stages, model.x, model.stages, view.active, empty);
+  const hostCharts = hostSeries(model.x, model.host || NO_HOST);
+  const noHost = view.active ? "No host readings yet. They need the worker host (LOADGEN_WORKER_LOGS_SSH)." : "No host readings in this run.";
+  setChart(state.charts.cpu, model.x, hostCharts.cpu, view.active, noHost);
+  setChart(state.charts.ram, model.x, hostCharts.ram, view.active, noHost);
+  setChart(state.charts.gpu, model.x, hostCharts.gpu, view.active, noHost);
+  $("hostSummary").textContent = hostSummary(model.host);
+}
+
+// Guard, clock and limits as summary.json records them, in the shape the run view reads.
+function summaryContext(summary, stopRequested = false) {
+  const scenario = summary.scenario || {};
+  return {
+    guardOff: summary.guard_enabled === false,
+    guardCameras: summary.guard_baseline_real_cameras || {},
+    clock: Object.fromEntries(Object.entries(summary.clock_offset || {}).map(([w, c]) => [w, (c || {}).offset_s ?? null])),
+    maxLagGrowth: (scenario.saturation || {}).max_lag_growth_per_s,
+    stripMeta: endedMeta(summary, stopRequested),
+  };
+}
+
+function endedMeta(summary, stopRequested) {
+  const planned = summary.planned_stages || [], ran = summary.stages || [];
+  const meta = [`<b>${ran.length}</b> of ${planned.length || ran.length} stages ran`];
+  if (summary.ended_at && summary.started_at) meta.push(`<b>${fmtElapsed(summary.ended_at - summary.started_at)}</b> total`);
+  const by = summary.stopped_by || (stopRequested ? "user" : null);
+  if (by) meta.push(by === "user" ? "stopped by you" : `stopped (${esc(by)})`);
+  return meta;
+}
+
+// Charts inside a closed group have no size; draw them when the group opens.
+for (const id of ["workerGroup", "hostGroup"]) {
+  $(id).addEventListener("toggle", () => { if ($(id).open) for (const chart of Object.values(state.charts)) if ($(id).contains(chart.canvas)) chart.resize(); });
 }
 
 const pick = (metrics, name, match = {}) => (metrics[name] || []).filter((s) => Object.entries(match).every(([k, v]) => s.labels[k] === v));
@@ -1150,23 +1550,39 @@ function renderLive() {
   const stage = pick(last, "loadgen_stage_info")[0];
   const errors = one(last, "loadgen_publish_errors_total");
   const cameras = one(last, "loadgen_active_cameras");
-  const offsets = pick(last, "loadgen_clock_offset_seconds").map((m) => `${m.labels.worker} ${m.value >= 0 ? "+" : ""}${m.value.toFixed(1)}s`).join(", ");
+  const clockMetrics = pick(last, "loadgen_clock_offset_seconds");
+  const offsets = clockMetrics.map((m) => `${m.labels.worker} ${m.value >= 0 ? "+" : ""}${m.value.toFixed(1)}s`).join(", ");
+  const stageAt = snaps.map((s) => { const m = pick(s.metrics, "loadgen_stage_info")[0]; return m ? { index: Number(m.labels.stage_index), name: m.labels.stage } : null; });
+  // Cameras per stage: the most published to while that stage was on.
+  const stageCameras = {};
+  snaps.forEach((s, i) => { const at = stageAt[i], c = one(s.metrics, "loadgen_planned_cameras"); if (at && c !== null) stageCameras[at.index] = Math.max(stageCameras[at.index] || 0, c); });
   const verdicts = pick(last, "loadgen_stage_kept_up").map((m) => ({
-    index: m.labels.stage_index, stage: m.labels.stage, worker: m.labels.worker, kept: m.value === 1,
+    index: m.labels.stage_index, stage: m.labels.stage, worker: m.labels.worker, kept: m.value === 1, cameras: stageCameras[Number(m.labels.stage_index)] ?? null,
     p95: one(last, "loadgen_stage_staleness_p95_seconds", { worker: m.labels.worker, stage: m.labels.stage, stage_index: m.labels.stage_index }),
   })).sort((a, b) => a.index.localeCompare(b.index) || a.worker.localeCompare(b.worker));
-  state.live = { stage: stage ? stage.labels.stage : "", cameras };
+  const host = hostLive(snaps, workers);
+  const spans = stageSpans(x, stageAt);
+  const span = spans[spans.length - 1];
+  const planned = one(last, "loadgen_stage_planned_seconds"), count = one(last, "loadgen_stage_count");
+  const stripMeta = [];
+  if (stage) stripMeta.push(`Stage <b>${esc(stage.labels.stage)}</b>${count ? `, ${Number(stage.labels.stage_index)} of ${num(count, 0)}` : ""}`);
+  if (span) stripMeta.push(`<b>${fmtElapsed(span.end - span.start)}</b>${planned ? ` of ${fmtElapsed(planned)}` : ""} in this stage`);
+  if (cameras !== null) stripMeta.push(`<b>${num(cameras, 0)}</b> synthetic cameras`);
+  if (lastOf(rate) !== null) stripMeta.push(`publishing <b>${num(lastOf(rate))}</b> frames/s`);
+  state.live = { stage: stage ? stage.labels.stage : "", stageOf: count ? `${Number(stage ? stage.labels.stage_index : 0)} of ${num(count, 0)}` : "", cameras };
   state.liveAborted = state.liveAborted || !!abort;
   state.liveModel = {
-    live: true,
+    live: true, workers,
     title: `Run ${state.runId || "(starting)"}${info ? ` · ${info.labels.scenario} (${info.labels.scenario_type}, ${info.labels.environment})` : ""}`,
     x, staleness, lag, excess: perWorker("loadgen_real_staleness_excess_seconds"),
     cameras: snaps.map((s) => one(s.metrics, "loadgen_active_cameras")), rate, processed, stages,
-    aborted: abort ? abort.labels.reason : null,
+    aborted: abort ? abort.labels.reason : null, stageSpans: spans, host, stripMeta,
     limit: one(last, "loadgen_threshold_seconds", { kind: "max_staleness" }), guard: one(last, "loadgen_threshold_seconds", { kind: "guard" }),
-    verdicts, now: buildNow(workers, staleness, lag, processed, verdicts),
+    guardCameras: Object.fromEntries(pick(last, "loadgen_guard_real_cameras").map((m) => [m.labels.worker, m.value])),
+    clock: Object.fromEntries(clockMetrics.map((m) => [m.labels.worker, m.value])),
+    verdicts,
     facts: [["Phase", phase ? phase.labels.phase : "–"], ["Stage", stage ? stage.labels.stage : "–"], ["Synthetic cameras", num(cameras, 0)],
-            ["Publishing", `${num(lastOf(rate))} frames/s`], ["Publish errors", num(errors, 0)], ["Clock offset", offsets || "–"]],
+            ["Publishing", `${num(lastOf(rate))} frames/s`], ["Publish errors", num(errors, 0)], ["Clock offset", offsets || "–"], ...hostFacts(host)],
   };
   if (state.mode === "live" && !state.viewing) renderModel(state.liveModel);
 }
@@ -1322,10 +1738,7 @@ async function openRun(runId, button) {
   const val = (v) => (v === undefined || v === "" || v === "-" || v === "None") ? null : Number(v);
   const x = timeseries.map((r) => val(r.elapsed_s));
   const perWorker = (suffix) => workers.map((w) => ({ label: w, values: timeseries.map((r) => val(r[`${w}_${suffix}`])) }));
-  const verdicts = [];
-  (summary.stages || []).forEach((stage, i) => Object.entries(stage.workers || {}).forEach(([w, entry]) => {
-    if (entry.verdict) verdicts.push({ index: String(i + 1).padStart(2, "0"), stage: stage.name, worker: w, kept: entry.verdict.kept_up, reason: entry.verdict.reason, hint: entry.verdict.hint, p95: entry.verdict.staleness_p95 });
-  }));
+  const verdicts = summaryVerdicts(summary);
   const columns = timeseries.length ? Object.keys(timeseries[0]) : [];
   const stages = workers.flatMap((w) => columns.filter((c) => c.startsWith(`${w}_stage_`) && c.endsWith("_p95")).map((c) => ({
     label: workers.length > 1 ? `${w} ${c.slice(w.length + 7, -4)}` : c.slice(w.length + 7, -4),
@@ -1333,17 +1746,21 @@ async function openRun(runId, button) {
   })));
   const processed = perWorker("processed_fps").filter((p) => p.values.some((v) => v !== null));
   const staleness = perWorker("staleness_p95"), lag = perWorker("lag");
+  const stageNames = [...new Set(timeseries.map((r) => r.stage).filter(Boolean))];
+  const stageAt = timeseries.map((r) => (r.stage ? { index: stageNames.indexOf(r.stage) + 1, name: r.stage } : null));
+  const host = hostHistory(timeseries, columns, workers, val);
   state.viewing = runId;
   state.viewModel = {
-    live: false,
+    live: false, ended: true, workers,
     title: `Past run ${summary.run_id} · ${scenario.name} (${scenario.type}, ${summary.environment})`,
     x, staleness, lag, excess: perWorker("real_excess"),
     cameras: timeseries.map((r) => val(r.active_cameras)), rate: timeseries.map((r) => val(r.publish_rate)),
-    processed, stages, aborted: summary.aborted || null,
+    processed, stages, aborted: summary.aborted || null, stageSpans: stageSpans(x, stageAt), host,
     limit: (scenario.saturation || {}).max_staleness_s, guard: (scenario.guard || {}).max_real_staleness_increase_s,
-    verdicts, now: buildNow(workers, staleness, lag, processed, verdicts), result: resultFromSummary(summary),
+    verdicts, result: resultFromSummary(summary), ...summaryContext(summary),
     facts: [["Template", summary.template_camera_id || "–"], ["Source", (scenario.source || {}).mode || "live"],
-            ["Stages", String((summary.stages || []).length)], ["Frames acked", String((summary.producer || {}).acked ?? "–")]],
+            ["Stages", String((summary.stages || []).length)], ["Frames acked", String((summary.producer || {}).acked ?? "–")],
+            ...(host ? [["Host readings", (summary.host_stats || {}).source || "–"]] : []), ...hostFacts(host)],
   };
   showMode("live", true);
 }

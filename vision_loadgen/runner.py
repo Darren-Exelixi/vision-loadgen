@@ -27,6 +27,7 @@ from vision_loadgen.config import AppConfig, ConfigError, GuardConfig, ScenarioC
 from vision_loadgen.exporter import MetricsExporter
 from vision_loadgen.frames import build_message
 from vision_loadgen.kafka_io import FrameProducer, LagReader
+from vision_loadgen.hoststats import HostStats
 from vision_loadgen.metrics import ActiveCameras, Recorder, Sampler
 from vision_loadgen.pacer import Pacer
 from vision_loadgen.registrar import Registrar
@@ -85,6 +86,7 @@ class Runner:
         self.template_id = template_camera_id(app, scenario)
         self.stop_event = threading.Event()
         self.abort_reason: Optional[str] = None
+        self.stopped_by: Optional[str] = None  # "user" (UI stop file) or "signal N"; the run ended early
         self.samples: dict[str, list[WorkerSample]] = {name: [] for name in scenario.workers}
         self.skipped_no_source = 0
         self._registrar: Optional[Registrar] = None
@@ -118,6 +120,7 @@ class Runner:
         lag_reader: Optional[LagReader] = None
         sampler: Optional[Sampler] = None
         recorder: Optional[Recorder] = None
+        host: Optional[HostStats] = None
         try:
             registrar.prepare(self.template_id)
             summary["template_camera_id"] = registry.template_camera_id
@@ -154,14 +157,21 @@ class Runner:
                 cameras_per_worker={name: self.app.workers[name].cameras_per_worker for name in self.scenario.workers},
                 worker_metrics={name: self.app.workers[name].metrics for name in self.scenario.workers},
             )
+            host = self._start_host_stats()
             # Baseline before anything is enabled: the workers' real cameras as they normally run.
             self._phase("baseline")
             guard = self._calibrated_guard(sampler)
             summary["guard_baseline_real_cameras"] = {worker: len(cams) for worker, cams in guard.baseline.items()}
+            for worker in self.scenario.workers:
+                self._metric("loadgen_guard_real_cameras", len(guard.baseline.get(worker, [])), worker=worker)
 
+            host = self._host_stats_ready(host)
+            if host is not None:
+                summary["host_stats"] = {"source": host.source, "gpus": host.gpu_count,
+                                         "containers": dict(host.containers)}
             recorder = Recorder(registry.directory, self.scenario.workers, self.exporter,
                                 stage_columns={name: self.app.workers[name].metrics.stages
-                                               for name in self.scenario.workers})
+                                               for name in self.scenario.workers}, host=host)
             registry.run_started_at = time.time()
             registry.set_status("running")
             self._phase("running")
@@ -177,6 +187,8 @@ class Runner:
         finally:
             if sampler:
                 sampler.stop()
+            if host:
+                host.stop()
             if source:
                 source.stop()
             if producer:
@@ -194,6 +206,7 @@ class Runner:
         summary["ended_at"] = time.time()
         summary["clock_offset"] = {name: client.clock.as_dict() for name, client in registrar.clients.items()}
         summary["aborted"] = self.abort_reason
+        summary["stopped_by"] = self.stopped_by
         summary["skipped_no_source_frame"] = self.skipped_no_source
         self._add_results(summary, registry)
         with (registry.directory / "summary.json").open("w", encoding="utf-8") as handle:
@@ -248,6 +261,30 @@ class Runner:
             return source
         return LiveTapSource(self.app.kafka, cfg.source_camera_ids or [template_id], synthetic_ids)
 
+    def _start_host_stats(self) -> Optional[HostStats]:
+        """Start reading the workers' host (CPU, RAM, GPU, VRAM); it warms up while the baseline runs."""
+        if not self.app.host_stats.enabled:
+            return None
+        host = HostStats(self.app.worker_logs, self.app.host_stats,
+                         {name: self.app.workers[name].container for name in self.scenario.workers})
+        if host.problem:
+            log.info("Host stats off: %s", host.problem)
+            return None
+        host.start()
+        return host
+
+    @staticmethod
+    def _host_stats_ready(host: Optional[HostStats]) -> Optional[HostStats]:
+        """The host reader once it has a first reading; None (and stopped) when the host never answered."""
+        if host is None:
+            return None
+        if host.wait_first(20.0) is None:
+            log.warning("Host stats unavailable (%s); the run goes on without CPU, RAM and GPU readings",
+                        host.problem)
+            host.stop()
+            return None
+        return host
+
     def _calibrated_guard(self, sampler: Sampler) -> RealCameraGuard:
         cfg = self.scenario.guard
         if self.options.no_guard:
@@ -293,6 +330,8 @@ class Runner:
             self._metric("loadgen_stage_info", 1, stage=stage.name, stage_index=stage_index)
             self._metric("loadgen_stage_index", number)
             self._metric("loadgen_planned_cameras", stage.cameras)
+            self._metric("loadgen_stage_planned_seconds", stage.duration_s)
+            self._metric("loadgen_stage_count", len(stages))
             if self.scenario.sizing == "per_stage":
                 self._resize(stage.cameras, pacer, active, guard)
             else:
@@ -327,6 +366,9 @@ class Runner:
                     if not verdict.kept_up:
                         failed.add(name)
                 record["workers"][name] = entry
+            resources = recorder.stage_resources(stage.name)
+            if resources:
+                record["resources"] = resources
             results.append(record)
             if self.scenario.type == "throughput" and failed >= set(self.scenario.workers):
                 log.info("Every worker has fallen behind; stopping the ramp")
@@ -425,6 +467,7 @@ class Runner:
     def _install_signal_handlers(self) -> None:
         def _handler(signum, _frame):
             log.warning("Signal %s received; stopping and tearing down", signum)
+            self.stopped_by = self.stopped_by or f"signal {signum}"
             self.stop_event.set()
 
         signal.signal(signal.SIGINT, _handler)
@@ -439,6 +482,7 @@ class Runner:
                 while not self.stop_event.wait(0.5):
                     if os.path.exists(stop_file):
                         log.warning("Stop requested (%s); stopping and tearing down", stop_file)
+                        self.stopped_by = self.stopped_by or "user"
                         self.stop_event.set()
 
             threading.Thread(target=_watch, name="loadgen-stop-file", daemon=True).start()
