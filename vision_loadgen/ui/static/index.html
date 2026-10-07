@@ -635,7 +635,8 @@ function updateScenarioHelp() {
   const type = $("scenario").value;
   $("scenarioHelp").textContent = SCENARIOS[type].text;
   $("overridesHelp").innerHTML = `Other keys: <code>fps_per_camera</code>, <code>settle_s</code>, `
-    + `<code>saturation.max_staleness_s</code>, <code>guard.max_real_staleness_increase_s</code>.`;
+    + `<code>saturation.max_staleness_s</code>, <code>guard.max_real_staleness_increase_s</code>. `
+    + `Worker settings for this run only (restored at teardown): <code>worker_settings.emotion.max_faces</code>.`;
   updateOverridesState();
   const allowed = state.config && state.config.environment === "staging" && type === "throughput";
   $("noGuard").disabled = !allowed;

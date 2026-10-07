@@ -220,6 +220,7 @@ The page keeps the last 5000 lines. `#logs` opens the tab directly.
 python -m vision_loadgen check   --scenario latency            # read-only preflight + plan
 python -m vision_loadgen run     --scenario throughput --no-guard   # staging only
 python -m vision_loadgen run     --scenario latency --set levels=[5,10,20,40]
+python -m vision_loadgen run     --worker emotion --set worker_settings.emotion.max_faces=12
 python -m vision_loadgen capture --name soak-baseline --duration 600 --camera <id>
 python -m vision_loadgen run     --scenario soak --set source.mode=corpus --set source.corpus_name=soak-baseline
 python -m vision_loadgen cleanup --run-id 20260929-101500-ab12
@@ -238,6 +239,11 @@ python -m vision_loadgen ui [--port 8765]
 - `--template-camera`: the real camera to copy; default: the worker's freshest live camera.
 - `--server-ip`: pick a deployment when a module runs on several servers.
 - `--set key=value`: scenario overrides (dotted keys, JSON values).
+  `worker_settings.<worker>.<column>=value` changes a column on the worker's enabled settings row
+  for this run only. The original value is recorded in the registry before the change and restored
+  at teardown, including `cleanup` of a run that died. Only columns listed in the worker preset's
+  `settings.tunable` are accepted, e.g. `worker_settings.emotion.max_faces=12` (1–100). The values
+  appear under `worker_settings` in the run summary.
 - `--config file`: YAML/JSON merged over the presets (new workers, `gpu_free_vram_mb`, table names).
 - `--env-file file`: `KEY=value` file loaded first (default `LOADGEN_ENV_FILE`, else `./.env`).
 - `--environment staging|production`: overrides `LOADGEN_ENVIRONMENT`. **Unset means production**,

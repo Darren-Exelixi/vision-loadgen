@@ -42,6 +42,19 @@ class Snapshot:
 
 
 @dataclass
+class SettingsOverride:
+    """A settings-row value changed for the run (scenario worker_settings); `original` is restored."""
+
+    worker: str
+    table: str
+    key_column: str
+    key: str
+    column: str
+    original: Any
+    value: Any
+
+
+@dataclass
 class Registry:
     run_id: str
     environment: str
@@ -57,6 +70,7 @@ class Registry:
     settings: list[SettingsEdit] = field(default_factory=list)
     camera_rows: list[CameraRows] = field(default_factory=list)
     snapshots: list[Snapshot] = field(default_factory=list)
+    overrides: list[SettingsOverride] = field(default_factory=list)
     workers: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Event image/video paths read before their rows were purged ("<worker>:<table>" -> paths), so a
     # retried cleanup can still delete files the rows no longer point at.
@@ -83,6 +97,7 @@ class Registry:
         data["settings"] = [SettingsEdit(**item) for item in data.get("settings", [])]
         data["camera_rows"] = [CameraRows(**item) for item in data.get("camera_rows", [])]
         data["snapshots"] = [Snapshot(**item) for item in data.get("snapshots", [])]
+        data["overrides"] = [SettingsOverride(**item) for item in data.get("overrides", [])]
         return cls(**data)
 
     @property

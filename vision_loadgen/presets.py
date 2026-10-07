@@ -9,7 +9,8 @@ table name. Worker keys are short names; `--worker` also accepts the function ke
   server_ip              pin a deployment when the function runs on several servers
   base_url               override the worker URL resolved from servers/server_functions
   consumer_group_prefix  defaults to "<function_key>_consumer_group_"
-  settings               where the module keeps its enabled camera list
+  settings               where the module keeps its enabled camera list; `tunable` lists the
+                         columns a scenario may set for one run (worker_settings.<worker>.<column>)
   camera_rows            per-camera config rows cloned from the template camera
   purge                  events deleted at teardown (db: module | main), with their files
   restore                rows without a camera column that synthetic cameras can change
@@ -38,7 +39,12 @@ WORKER_PRESETS: dict[str, dict] = {
         "container": "sentiment_analysis_backend",
         "database_name": "emotion_detection_db",
         "db_url": "${SENTIMENT_DATABASE_URL}",
-        "settings": {"table": "emotion_settings", "camera_columns": ["selected_cameras"]},
+        "settings": {
+            "table": "emotion_settings",
+            "camera_columns": ["selected_cameras"],
+            # Bounds match vision-module-backend's EmotionSetting schema.
+            "tunable": {"max_faces": {"type": "int", "min": 1, "max": 100}},
+        },
         "camera_rows": [{"table": "emotion_camera_zones"}],
         "purge": [
             {"table": "emotion_events", "file_columns": ["image_path", "video_path"]},

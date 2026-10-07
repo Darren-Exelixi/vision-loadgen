@@ -257,3 +257,9 @@ def test_worker_log_follow_read_and_stop(app, tmp_path, monkeypatch):
     assert not logs.read("emotion", 0)["running"]
     with pytest.raises(KeyError):
         logs.read("crowd", 0)
+
+
+def test_worker_settings_override_passes_the_ui_key_check(tmp_path):
+    from vision_loadgen.ui.server import SET_KEY
+
+    assert SET_KEY.match("worker_settings.emotion.max_faces")

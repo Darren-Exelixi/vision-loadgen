@@ -269,6 +269,8 @@ def _check(app: AppConfig, args) -> int:
     try:
         for name, key in registrar.check_settings_rows().items():
             ok(f"{name}: enabled settings row {key}")
+            for column, value in scenario.worker_settings.get(name, {}).items():
+                ok(f"{name}: {column} will be set to {value} for the run and restored at teardown")
     except Exception as exc:
         fail(f"settings: {exc}")
 

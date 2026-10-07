@@ -98,7 +98,7 @@ class Runner:
 
     def run(self) -> dict[str, Any]:
         registry = Registry.create(self.app.output.results_dir, new_run_id(), self.app.environment)
-        registrar = Registrar(self.app, self.scenario.workers, registry)
+        registrar = Registrar(self.app, self.scenario.workers, registry, self.scenario.worker_settings)
         self._registrar = registrar
         self._install_signal_handlers()
         self._start_exporter(registry.run_id)
@@ -113,6 +113,8 @@ class Runner:
             "started_at": time.time(),
             "guard_enabled": self.scenario.guard.enabled and not self.options.no_guard,
             "results_dir": str(registry.directory),
+            # Settings-row values this run was measured with (originals restored at teardown).
+            "worker_settings": self.scenario.worker_settings,
             "stages": [],
         }
         source: Optional[FrameSource] = None

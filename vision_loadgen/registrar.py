@@ -14,7 +14,7 @@ from vision_loadgen import db, dockerhost, media
 from vision_loadgen.config import AppConfig, ConfigError, PurgeTarget
 from vision_loadgen.frames import build_message
 from vision_loadgen.kafka_io import TopicWaker
-from vision_loadgen.registry import Assignment, CameraRows, Registry, SettingsEdit, Snapshot
+from vision_loadgen.registry import Assignment, CameraRows, Registry, SettingsEdit, SettingsOverride, Snapshot
 from vision_loadgen.workers import Deployment, WorkerClient, WorkerStatus, resolve_deployment
 
 log = logging.getLogger(__name__)
@@ -43,10 +43,13 @@ def plan_restore(touched: set[str], shared: set[str], snapshot_keys: set[str]) -
 
 
 class Registrar:
-    def __init__(self, app: AppConfig, worker_names: list[str], registry: Registry) -> None:
+    def __init__(self, app: AppConfig, worker_names: list[str], registry: Registry,
+                 worker_settings: Optional[dict[str, dict[str, Any]]] = None) -> None:
         self.app = app
         self.worker_names = worker_names
         self.registry = registry
+        # Validated scenario.worker_settings: {worker: {column: value}}, applied in create().
+        self.worker_settings = worker_settings or {}
         self.clients: dict[str, WorkerClient] = {}
         self._template: dict[str, Any] = {}
         self._settings_rows: dict[str, str] = {}
@@ -181,6 +184,7 @@ class Registrar:
         self._clone_camera_rows(self._template["id"])
         self._take_snapshots()
         self._record_settings_edits(self._settings_rows)
+        self._apply_overrides(self._settings_rows)
         return list(self.registry.camera_ids)
 
     def activate(self, count: int) -> dict[str, WorkerStatus]:
@@ -381,6 +385,64 @@ class Registrar:
             )
         self.registry.save()
 
+    def _apply_overrides(self, settings_rows: dict[str, str]) -> None:
+        """Set scenario worker_settings on each worker's enabled settings row. The original value is
+        recorded (and saved) before the update so teardown restores it even if the run dies here.
+        The worker picks the new value up on the sync that activate() runs next."""
+        for name, columns in self.worker_settings.items():
+            if name not in settings_rows:
+                continue
+            target = self.app.workers[name].settings
+            key = settings_rows[name]
+            conn = db.connect(self.app.worker_db_url(name))
+            try:
+                with conn.cursor() as cur:
+                    for column, value in columns.items():
+                        original = self._read_setting(cur, target.table, target.key_column, key, column)
+                        self.registry.overrides.append(SettingsOverride(
+                            worker=name, table=target.table, key_column=target.key_column, key=key,
+                            column=column, original=original, value=value,
+                        ))
+                        self.registry.save()
+                        self._write_setting(cur, target.table, target.key_column, key, column, value)
+                        conn.commit()
+                        log.info("%s %s.%s: %s -> %s for this run", name, target.table, column, original, value)
+            finally:
+                conn.close()
+
+    def _restore_override(self, override: SettingsOverride) -> str:
+        conn = db.connect(self.app.worker_db_url(override.worker))
+        try:
+            with conn.cursor() as cur:
+                self._write_setting(cur, override.table, override.key_column, override.key,
+                                    override.column, override.original)
+            conn.commit()
+        finally:
+            conn.close()
+        return f"restored {override.original}"
+
+    @staticmethod
+    def _read_setting(cur, table: str, key_column: str, key: str, column: str) -> Any:
+        cur.execute(
+            f"SELECT {db.quote_ident(column)} AS value FROM {db.quote_table(table)} "
+            f"WHERE {db.quote_ident(key_column)}::text = %s",
+            (key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError(f"{table} row {key_column}={key} disappeared before {column} could be set")
+        value = row["value"]
+        # Tunable columns are int/float/bool; keep those typed so the registry JSON restores them as-is.
+        return value if value is None or isinstance(value, (bool, int, float, str)) else db.to_text(value)
+
+    @staticmethod
+    def _write_setting(cur, table: str, key_column: str, key: str, column: str, value: Any) -> None:
+        cur.execute(
+            f"UPDATE {db.quote_table(table)} SET {db.quote_ident(column)} = %s "
+            f"WHERE {db.quote_ident(key_column)}::text = %s",
+            (value, key),
+        )
+
     def _sync_and_verify(self, expected: set[str]) -> dict[str, WorkerStatus]:
         statuses: dict[str, WorkerStatus] = {}
         for name, client in self.clients.items():
@@ -439,6 +501,10 @@ class Registrar:
         for edit in self.registry.settings:
             step(f"settings:{edit.worker}", lambda edit=edit: self._edit_settings(
                 edit.worker, edit.table, edit.key_column, edit.key, edit.columns, add=False, ids=ids))
+        # Before the syncs below, so workers reload the original values.
+        for override in self.registry.overrides:
+            step(f"override:{override.worker}.{override.column}",
+                 lambda override=override: self._restore_override(override))
         for name in self.registry.workers:
             step(f"sync:{name}", lambda name=name: self._sync(name, self._client_for(name)) and "synced")
         self.close_waker()

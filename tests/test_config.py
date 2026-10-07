@@ -116,6 +116,30 @@ def test_load_scenario_presets_workers_and_overrides():
     assert load_scenario("soak", app).workers == ["emotion"]
 
 
+def test_worker_settings_override_is_parsed_and_validated():
+    app = _app()
+    scenario = load_scenario("soak", app, ["cameras=2", "worker_settings.emotion.max_faces=12"], ["emotion"])
+    assert scenario.worker_settings == {"emotion": {"max_faces": 12}}
+    # The function key is accepted and normalised to the worker name.
+    scenario = load_scenario("soak", app, ["cameras=2", "worker_settings.sentiment-analysis.max_faces=4"],
+                             ["emotion"])
+    assert scenario.worker_settings == {"emotion": {"max_faces": 4}}
+
+
+@pytest.mark.parametrize("override, message", [
+    ("worker_settings.emotion.min_faces=3", "not tunable"),
+    ("worker_settings.emotion.max_faces=0", "below the minimum"),
+    ("worker_settings.emotion.max_faces=101", "above the maximum"),
+    ("worker_settings.emotion.max_faces=2.5", "integer"),
+    ("worker_settings.emotion.max_faces=lots", "number"),
+    ("worker_settings.crowd.max_faces=4", "not one of this run's workers"),
+    ("worker_settings.nope.max_faces=4", "Unknown worker"),
+])
+def test_worker_settings_override_rejects_bad_values(override, message):
+    with pytest.raises(ConfigError, match=message):
+        load_scenario("soak", _app(), ["cameras=2", override], ["emotion"])
+
+
 def test_scenario_file(tmp_path):
     path = tmp_path / "s.json"
     path.write_text('{"name": "x", "type": "soak", "cameras": 1, "workers": ["attendance"]}', encoding="utf-8")

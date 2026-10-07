@@ -169,12 +169,40 @@ class HostStatsConfig(BaseModel):
     interval_s: float = Field(default=2.0, ge=1.0, le=60.0)
 
 
+class TunableColumn(BaseModel):
+    """A settings-row column a scenario may set for one run (`worker_settings`); restored at teardown."""
+
+    type: Literal["int", "float", "bool"]
+    min: Optional[float] = None
+    max: Optional[float] = None
+
+    def coerce(self, value: Any) -> Any:
+        if self.type == "bool":
+            if not isinstance(value, bool):
+                raise ValueError(f"expected true or false, got {value!r}")
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"expected a number, got {value!r}")
+        if self.type == "int":
+            if int(value) != value:
+                raise ValueError(f"expected an integer, got {value!r}")
+            value = int(value)
+        else:
+            value = float(value)
+        if self.min is not None and value < self.min:
+            raise ValueError(f"{value} is below the minimum {self.min:g}")
+        if self.max is not None and value > self.max:
+            raise ValueError(f"{value} is above the maximum {self.max:g}")
+        return value
+
+
 class SettingsTarget(BaseModel):
     table: str
     camera_columns: list[str]
     enabled_where: str = "is_enabled = TRUE AND deleted_at IS NULL"
     order_by: str = "id"
     key_column: str = "id"
+    tunable: dict[str, TunableColumn] = Field(default_factory=dict)
 
 
 class CameraRowsTarget(BaseModel):
@@ -378,6 +406,10 @@ class ScenarioConfig(BaseModel):
     cameras: int = 0
     duration_s: float = 3600.0
 
+    # Settings-row values for this run only, per worker: --set worker_settings.emotion.max_faces=12.
+    # Columns must be listed in the worker's settings.tunable; originals are restored at teardown.
+    worker_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
     @model_validator(mode="after")
     def _check_type_fields(self) -> "ScenarioConfig":
         if not self.workers:
@@ -431,4 +463,28 @@ def load_scenario(ref: str, app: AppConfig, overrides: Optional[list[str]] = Non
             raise ConfigError("No workers to test: pass --worker (e.g. --worker crowd) or run beside a worker")
         data["workers"] = [app.local_worker]
     data["workers"] = [app.worker_name(name) for name in data["workers"]]
-    return ScenarioConfig.model_validate(data)
+    scenario = ScenarioConfig.model_validate(data)
+    scenario.worker_settings = validate_worker_settings(app, scenario)
+    return scenario
+
+
+def validate_worker_settings(app: AppConfig, scenario: ScenarioConfig) -> dict[str, dict[str, Any]]:
+    """Check each worker_settings entry against the worker's tunable columns; returns coerced values."""
+    checked: dict[str, dict[str, Any]] = {}
+    for raw_name, columns in scenario.worker_settings.items():
+        name = app.worker_name(raw_name)
+        if name not in scenario.workers:
+            raise ConfigError(f"worker_settings.{raw_name}: '{name}' is not one of this run's workers "
+                              f"({', '.join(scenario.workers)})")
+        if not isinstance(columns, dict) or not columns:
+            raise ConfigError(f"worker_settings.{raw_name} must map column names to values")
+        tunable = app.workers[name].settings.tunable
+        for column, value in columns.items():
+            if column not in tunable:
+                allowed = ", ".join(sorted(tunable)) or "none"
+                raise ConfigError(f"worker_settings.{name}.{column} is not tunable (allowed: {allowed})")
+            try:
+                checked.setdefault(name, {})[column] = tunable[column].coerce(value)
+            except ValueError as exc:
+                raise ConfigError(f"worker_settings.{name}.{column}: {exc}") from exc
+    return checked

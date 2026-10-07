@@ -14,7 +14,7 @@ from vision_loadgen.db import (
     to_text,
 )
 from vision_loadgen.registrar import plan_restore
-from vision_loadgen.registry import Assignment, Registry, SettingsEdit
+from vision_loadgen.registry import Assignment, Registry, SettingsEdit, SettingsOverride
 from vision_loadgen.scenarios import build_stages
 
 CAMERA_COLUMNS = [
@@ -97,10 +97,13 @@ def test_registry_round_trip(tmp_path):
     registry.active_count = 1
     registry.assignments.append(Assignment(worker="crowd", table="function_camera_regions", key="a1"))
     registry.settings.append(SettingsEdit(worker="crowd", table="t", key_column="id", key="1", columns=["c"]))
+    registry.overrides.append(SettingsOverride(worker="emotion", table="emotion_settings", key_column="id",
+                                               key="1", column="max_faces", original=8, value=12))
     registry.set_status("running")
     loaded = Registry.load(registry.path)
     assert loaded.status == "running" and loaded.camera_ids == ["c1"] and loaded.active_count == 1
     assert loaded.assignments[0].key == "a1" and loaded.settings[0].columns == ["c"]
+    assert loaded.overrides == registry.overrides
     assert json.loads((tmp_path / "run-1" / "registry.json").read_text())["run_id"] == "run-1"
     with pytest.raises(FileExistsError):
         Registry.create(tmp_path, "run-1", "staging")
@@ -264,3 +267,91 @@ def test_department_links_copied_from_template_region_and_removed(tmp_path, monk
     assert Registrar._remove_department_links("postgresql://main", "syn-region") == "2 deleted"
     assert executed[-1] == ("DELETE FROM department_camera_regions WHERE camera_region_id = %s::uuid", ("syn-region",))
     assert app.workers["attendance"].copy_department_links and not app.workers["crowd"].copy_department_links
+
+
+def _override_db(monkeypatch, row_value):
+    """Fake DB holding one settings row; records executed statements."""
+    from vision_loadgen import db as db_module
+
+    state = {"value": row_value, "statements": []}
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params):
+            state["statements"].append((sql, params))
+            if sql.startswith("UPDATE"):
+                state["value"] = params[0]
+
+        def fetchone(self):
+            return {"value": state["value"]}
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_module, "connect", lambda url: Conn())
+    return state
+
+
+def _emotion_registrar(tmp_path, worker_settings=None):
+    from vision_loadgen.environment import build_app_config
+    from vision_loadgen.registrar import Registrar
+
+    environ = {"LOADGEN_ENVIRONMENT": "staging", "POSTGRES_URL": "postgresql://x@127.0.0.1:1"}
+    app = build_app_config(worker_settings_spec="", environ=environ, package_env={})
+    registry = Registry.create(tmp_path, "run-o", "staging")
+    return Registrar(app, ["emotion"], registry, worker_settings), registry
+
+
+def test_worker_settings_override_recorded_before_update_then_restored(tmp_path, monkeypatch):
+    state = _override_db(monkeypatch, 8)
+    registrar, registry = _emotion_registrar(tmp_path, {"emotion": {"max_faces": 12}})
+    seen_on_disk = []
+    original_write = registrar._write_setting
+
+    def write(cur, table, key_column, key, column, value):
+        seen_on_disk.append(json.loads(open(registry.path, encoding="utf-8").read())["overrides"])
+        original_write(cur, table, key_column, key, column, value)
+
+    monkeypatch.setattr(registrar, "_write_setting", write)
+    registrar._apply_overrides({"emotion": "5"})
+
+    assert state["value"] == 12
+    assert seen_on_disk[0] == [{"worker": "emotion", "table": "emotion_settings", "key_column": "id", "key": "5",
+                                "column": "max_faces", "original": 8, "value": 12}]
+    update_sql, update_params = state["statements"][-1]
+    assert update_sql == 'UPDATE "emotion_settings" SET "max_faces" = %s WHERE "id"::text = %s'
+    assert update_params == (12, "5")
+
+    # A later cleanup works from the registry file alone.
+    loaded = Registry.load(registry.path)
+    assert registrar._restore_override(loaded.overrides[0]) == "restored 8"
+    assert state["value"] == 8
+
+
+def test_teardown_restores_overrides_before_syncing_workers(tmp_path, monkeypatch):
+    state = _override_db(monkeypatch, 12)
+    registrar, registry = _emotion_registrar(tmp_path)
+    registry.workers = {"emotion": {}}
+    registry.overrides.append(SettingsOverride(worker="emotion", table="emotion_settings", key_column="id",
+                                               key="5", column="max_faces", original=8, value=12))
+    synced_with = []
+    monkeypatch.setattr(registrar, "_client_for", lambda name: None)
+    monkeypatch.setattr(registrar, "_sync", lambda name, client: synced_with.append(state["value"]) or True)
+    monkeypatch.setattr(registrar, "_remove_main", lambda url, table, keys: "0 deleted")
+
+    report = registrar.teardown(keep_events=True)
+    assert report["steps"]["override:emotion.max_faces"] == "restored 8"
+    assert synced_with == [8]
+    assert not report["errors"]
